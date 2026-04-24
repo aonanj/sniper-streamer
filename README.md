@@ -56,6 +56,21 @@ Persisted tables:
 Rows older than `PERSIST_RETENTION_DAYS` are purged automatically. The default
 retention is 14 days.
 
+To export the retained SQLite data for LLM review and threshold tuning:
+
+```bash
+./.venv/bin/python scripts/export_persisted_data.py
+```
+
+The export lands under `data/exports/` and includes a manifest, current config,
+per-symbol summaries, metric distributions, alert summaries, minute trade-flow
+buckets, derived flow-cluster candidates, and normalized raw CSVs. To keep only
+the most recent run window:
+
+```bash
+./.venv/bin/python scripts/export_persisted_data.py --since-hours 4
+```
+
 ## Data Sources
 
 WebSocket subscriptions:

@@ -1,0 +1,75 @@
+{
+  "cluster_bucket_pct": 0.25,
+  "database": "/Users/alexo/Projects/sniper-streamer/data/sniper_streamer.sqlite3",
+  "files": [
+    {
+      "description": "export guide",
+      "path": "00_manifest.md"
+    },
+    {
+      "description": "SQLite schema",
+      "path": "01_schema.sql"
+    },
+    {
+      "description": "current config constants",
+      "path": "02_config.json"
+    },
+    {
+      "description": "table counts and time ranges",
+      "path": "03_table_counts.csv"
+    },
+    {
+      "description": "per-symbol snapshot and threshold summary",
+      "path": "04_snapshot_symbol_summary.csv"
+    },
+    {
+      "description": "snapshot metric distributions",
+      "path": "05_snapshot_metric_summary.csv"
+    },
+    {
+      "description": "latest normalized snapshot per symbol",
+      "path": "06_latest_snapshots.csv"
+    },
+    {
+      "description": "one-minute trade flow buckets",
+      "path": "07_trade_flow_minutes.csv"
+    },
+    {
+      "description": "derived hourly taker-flow cluster candidates",
+      "path": "08_flow_cluster_candidates.csv"
+    },
+    {
+      "description": "alert counts by symbol and kind",
+      "path": "09_alert_summary.csv"
+    },
+    {
+      "description": "alert event rows",
+      "path": "10_alerts.csv"
+    },
+    {
+      "description": "LLM review prompt",
+      "path": "11_llm_review_prompt.md"
+    },
+    {
+      "description": "raw market_snapshots rows",
+      "path": "raw_market_snapshots.csv"
+    },
+    {
+      "description": "raw trades rows",
+      "path": "raw_trades.csv"
+    },
+    {
+      "description": "raw liquidations rows",
+      "path": "raw_liquidations.csv"
+    },
+    {
+      "description": "raw alerts rows",
+      "path": "raw_alerts.csv"
+    }
+  ],
+  "generated_at_utc": "2026-04-24T23:43:22.830440+00:00",
+  "include_api_payloads": false,
+  "include_raw_rows": true,
+  "output_directory": "/Users/alexo/Projects/sniper-streamer/data/exports/sniper_streamer_export_20260424_234322Z",
+  "selected_window": "all retained rows"
+}
