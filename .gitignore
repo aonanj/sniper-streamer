@@ -1,0 +1,50 @@
+# Ignore all files and directories.
+# This is a broad rule and will ignore everything in the repository directory
+# and all subdirectories.
+# Ignore all files and directories that begin with a period (dotfiles).
+# This is a common practice to avoid committing system-generated files
+# (like .DS_Store on macOS) or local configuration folders (like .vscode/).
+#
+# The `**` pattern matches directories at any level.
+.DS_Store
+.vscode/
+.env
+.env*
+.env.*
+.resources/
+.claude/
+
+
+
+# --- Project-specific ignores ---
+
+# Never commit raw AppColl CSV exports (contain client data)
+data/appcoll_exports/*.csv
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Debug screenshots from Playwright failures
+debug/
+
+# Local run logs
+*.log
+
+# --- Exceptions ---
+# The .gitignore file itself should be version-controlled.
+!.gitignore
+
+appcoll_exports/
+sharepoint_context.json
+
+work_*
+*.in

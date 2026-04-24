@@ -1,16 +1,17 @@
-"""Binance USDT-M futures feed — WebSocket ingestion and REST polling.
+"""Hyperliquid USDC perpetual futures feed.
 
-Public streams only; no API key required.
+Public data only; no API key required.
 
-WS streams consumed:
-  <sym>@markPrice@1s   — mark price + predicted funding rate
-  <sym>@aggTrade       — aggregated trades (for CVD)
-  !forceOrder@arr      — all-market liquidation orders (throttled to 1/sym/s)
+WebSocket subscriptions consumed:
+  activeAssetCtx  - mark price, funding rate, oracle price, open interest
+  trades          - executed trades for CVD/taker flow
 
-REST endpoints polled:
-  /fapi/v1/openInterest            — current open interest (coins)
-  /futures/data/openInterestHist   — 5-min bucketed OI history (seeded on startup)
-  api.binance.com/api/v3/ticker/price  — spot price for basis calc
+Info endpoint polled:
+  metaAndAssetCtxs - current asset contexts across perpetual markets
+
+Hyperliquid's official public market subscriptions do not expose a Binance
+`!forceOrder@arr` equivalent, so liquidation-derived signals stay disabled
+unless a separate liquidation source is added.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import asyncio
 import json
 import time
 from collections import defaultdict
+from typing import Any
 
 import httpx
 import websockets
@@ -27,69 +29,170 @@ from websockets.exceptions import ConnectionClosed
 import config
 from state import SymbolState
 
-# Shared state — read by dashboard and alerts modules
+# Shared state - read by dashboard and alerts modules
 state: dict[str, SymbolState] = defaultdict(SymbolState)
+
+_QUOTE_SUFFIXES = ("USDC", "USDT", "USD")
+_WARNED_MISSING: set[str] = set()
+
+
+# ------------------------------------------------------------------ #
+# Symbol helpers
+
+def _coin_from_watch_symbol(sym: str) -> str:
+    value = sym.strip()
+    upper = value.upper()
+
+    for sep in ("-", "/", "_"):
+        if sep in upper:
+            base, suffix = upper.rsplit(sep, 1)
+            if suffix in _QUOTE_SUFFIXES or suffix == "PERP":
+                return base
+
+    for suffix in (*_QUOTE_SUFFIXES, "PERP"):
+        if upper.endswith(suffix) and len(upper) > len(suffix):
+            return upper[: -len(suffix)]
+
+    return upper
+
+
+_SYMBOL_BY_COIN = {
+    # Hyperliquid perps use the coin name ("BTC"), while the local config keeps
+    # the quote suffix visible ("btc-usdc").
+    coin.upper(): sym
+    for sym in config.WATCHLIST
+    if (coin := _coin_from_watch_symbol(sym))
+}
+
+
+def _symbol_for_coin(coin: str | None) -> str | None:
+    if not coin:
+        return None
+    return _SYMBOL_BY_COIN.get(coin.upper())
+
+
+def _watch_coins() -> list[str]:
+    return list(_SYMBOL_BY_COIN.keys())
+
+
+def _to_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _asset_ctx_payload() -> dict[str, str]:
+    payload = {"type": "metaAndAssetCtxs"}
+    if config.HYPERLIQUID_DEX:
+        payload["dex"] = config.HYPERLIQUID_DEX
+    return payload
 
 
 # ------------------------------------------------------------------ #
 # Message handlers
 
-def _handle(stream: str, data: dict) -> None:
-    stream_key = stream.lower()
+def _apply_asset_ctx(
+    coin: str | None,
+    ctx: dict[str, Any],
+    ts_ms: int | None = None,
+    force_oi_sample: bool = False,
+) -> None:
+    sym = _symbol_for_coin(coin)
+    if sym is None:
+        return
 
-    if "markprice" in stream_key:
-        sym = data.get("s", "").lower()
-        if sym not in config.WATCHLIST:
-            return
-        st = state[sym]
-        st.mark            = float(data["p"])
-        st.funding         = float(data["r"])
-        st.next_funding_ts = int(data["T"])
-        st.record_mark(int(data["E"]))
+    ts_ms = ts_ms or int(time.time() * 1000)
+    st = state[sym]
 
-    elif "aggtrade" in stream_key:
-        sym = data.get("s", "").lower()
-        if sym not in config.WATCHLIST:
-            return
-        state[sym].add_trade(
-            ts_ms=int(data["T"]),
-            is_buyer_maker=bool(data["m"]),
-            qty=float(data["q"]),
-            price=float(data["p"]),
+    mark = _to_float(ctx.get("markPx") or ctx.get("midPx"))
+    if mark:
+        st.mark = mark
+
+    if "funding" in ctx:
+        st.funding = _to_float(ctx.get("funding"))
+
+    oracle = _to_float(ctx.get("oraclePx"))
+    if oracle:
+        st.spot = oracle
+
+    if "openInterest" in ctx:
+        min_interval_ms = None if force_oi_sample else config.OI_POLL_INTERVAL * 1000
+        st.record_oi(ts_ms, _to_float(ctx.get("openInterest")), min_interval_ms)
+
+    if mark:
+        st.record_mark(ts_ms)
+
+
+def _handle_trade(trade: dict[str, Any]) -> None:
+    sym = _symbol_for_coin(trade.get("coin"))
+    if sym is None:
+        return
+
+    side = str(trade.get("side", "")).upper()
+    if side not in {"A", "B"}:
+        return
+
+    # Hyperliquid trade side is the aggressing side: B = buy, A = sell.
+    state[sym].add_trade(
+        ts_ms=int(trade.get("time") or time.time() * 1000),
+        is_buyer_maker=(side == "A"),
+        qty=_to_float(trade.get("sz")),
+        price=_to_float(trade.get("px")),
+    )
+
+    liquidation = trade.get("liquidation")
+    if isinstance(liquidation, dict):
+        state[sym].add_liq(
+            ts_ms=int(trade.get("time") or time.time() * 1000),
+            side="SELL" if side == "A" else "BUY",
+            qty=_to_float(trade.get("sz")),
+            price=_to_float(trade.get("px")),
         )
 
-    elif stream_key == "!forceorder@arr":
-        o = data.get("o", {})
-        sym = o.get("s", "").lower()
-        if sym not in config.WATCHLIST:
-            return
-        # ap = average fill price; fall back to order price p if missing/zero
-        price = float(o.get("ap") or o.get("p") or 0)
-        if price:
-            state[sym].add_liq(
-                ts_ms=int(o["T"]),
-                side=o["S"],
-                qty=float(o["q"]),
-                price=price,
-            )
+
+def _handle(msg: dict[str, Any]) -> None:
+    channel = msg.get("channel")
+    data = msg.get("data")
+
+    if channel in {"subscriptionResponse", "pong"}:
+        return
+
+    if channel == "activeAssetCtx" and isinstance(data, dict):
+        _apply_asset_ctx(data.get("coin"), data.get("ctx") or {})
+        return
+
+    if channel == "trades":
+        trades = data if isinstance(data, list) else [data]
+        for trade in trades:
+            if isinstance(trade, dict):
+                _handle_trade(trade)
+
 
 # ------------------------------------------------------------------ #
 # WebSocket coroutine
 
-async def _run_combined_ws(streams: list[str], label: str) -> None:
-    url = f"{config.WS_URL}?streams={'/'.join(streams)}"
-
+async def _run_subscription_ws(
+    subscriptions: list[dict[str, str]], label: str
+) -> None:
     backoff = 1.0
     while True:
         try:
             async with websockets.connect(
-                url, ping_interval=20, ping_timeout=20
+                config.WS_URL, ping_interval=20, ping_timeout=20
             ) as ws:
+                for subscription in subscriptions:
+                    await ws.send(json.dumps({
+                        "method": "subscribe",
+                        "subscription": subscription,
+                    }))
+
                 backoff = 1.0  # reset on successful connect
                 async for raw in ws:
                     try:
-                        msg = json.loads(raw)
-                        _handle(msg.get("stream", ""), msg.get("data", {}))
+                        _handle(json.loads(raw))
                     except Exception:
                         pass  # never let a bad message kill the connection
         except asyncio.CancelledError:
@@ -103,64 +206,59 @@ async def _run_combined_ws(streams: list[str], label: str) -> None:
 
 
 async def run_ws() -> None:
-    core_streams = []
-    trade_streams = []
-    for sym in config.WATCHLIST:
-        core_streams.append(f"{sym}@markPrice@1s")
-        trade_streams.append(f"{sym}@aggTrade")
-    core_streams.append("!forceOrder@arr")
+    market_subs = [
+        {"type": "activeAssetCtx", "coin": coin}
+        for coin in _watch_coins()
+    ]
+    trade_subs = [
+        {"type": "trades", "coin": coin}
+        for coin in _watch_coins()
+    ]
 
     await asyncio.gather(
-        _run_combined_ws(core_streams, "market-core"),
-        _run_combined_ws(trade_streams, "trades"),
+        _run_subscription_ws(market_subs, "market-core"),
+        _run_subscription_ws(trade_subs, "trades"),
     )
 
 
 # ------------------------------------------------------------------ #
-# REST polling coroutine
+# Info polling coroutine
 
-async def _seed_oi_history(client: httpx.AsyncClient) -> None:
-    """Pre-load 12 hours of OI history so delta metrics are available immediately."""
-    for sym in config.WATCHLIST:
-        try:
-            r = await client.get(
-                f"{config.REST_BASE}/futures/data/openInterestHist",
-                params={"symbol": sym.upper(), "period": "5m", "limit": 144},
-            )
-            for entry in r.json():
-                state[sym].oi_history.record(
-                    int(entry["timestamp"]),
-                    float(entry["sumOpenInterest"]),
-                )
-        except Exception as e:
-            print(f"[SEED OI] {sym}: {e}")
+async def _poll_asset_contexts(
+    client: httpx.AsyncClient, force_oi_sample: bool = True
+) -> None:
+    response = await client.post(config.INFO_URL, json=_asset_ctx_payload())
+    response.raise_for_status()
+    meta, contexts = response.json()
+
+    found: set[str] = set()
+    for asset, ctx in zip(meta.get("universe", []), contexts, strict=False):
+        coin = asset.get("name")
+        sym = _symbol_for_coin(coin)
+        if sym is None or asset.get("isDelisted"):
+            continue
+        found.add(str(coin).upper())
+        _apply_asset_ctx(coin, ctx, force_oi_sample=force_oi_sample)
+
+    missing = set(_SYMBOL_BY_COIN) - found
+    new_missing = missing - _WARNED_MISSING
+    if new_missing:
+        print(
+            "[INFO] watchlist coin(s) not found on Hyperliquid: "
+            + ", ".join(sorted(new_missing))
+        )
+        _WARNED_MISSING.update(new_missing)
 
 
 async def poll_rest() -> None:
-    """Poll OI and spot price every OI_POLL_INTERVAL seconds."""
+    """Poll current asset contexts every OI_POLL_INTERVAL seconds."""
     async with httpx.AsyncClient(timeout=10) as client:
-        await _seed_oi_history(client)
         while True:
-            ts_now = int(time.time() * 1000)
-            for sym in config.WATCHLIST:
-                try:
-                    r = await client.get(
-                        f"{config.REST_BASE}/fapi/v1/openInterest",
-                        params={"symbol": sym.upper()},
-                    )
-                    oi = float(r.json()["openInterest"])
-                    st = state[sym]
-                    st.oi = oi
-                    st.oi_history.record(ts_now, oi)
-
-                    r2 = await client.get(
-                        f"{config.SPOT_BASE}/api/v3/ticker/price",
-                        params={"symbol": sym.upper()},
-                    )
-                    st.spot = float(r2.json()["price"])
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    print(f"[REST] {sym}: {e}")
+            try:
+                await _poll_asset_contexts(client)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[INFO] {type(e).__name__}: {e}")
 
             await asyncio.sleep(config.OI_POLL_INTERVAL)

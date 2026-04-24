@@ -77,6 +77,8 @@ def _fmt_top_cluster(st: SymbolState) -> Text:
     ↓S = cluster below, shorts wiped (support on retest)
     Arrow alone without matching side gets yellow (unusual configuration).
     """
+    if not config.LIQUIDATION_FEED_ENABLED:
+        return Text("off", style="dim")
     if not st.mark:
         return Text("-", style="dim")
     clusters = st.liq_clusters(window_ms=3_600_000, min_count=2)
@@ -121,7 +123,7 @@ def _fmt_liq_vol(usd: float) -> Text:
 def _build_screener_table() -> Table:
     now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S")
     t = Table(
-        title=f"[bold]Binance USDT-M Screener[/bold]  [{now_utc} UTC]",
+        title=f"[bold]Hyperliquid USDC Perp Screener[/bold]  [{now_utc} UTC]",
         header_style="bold cyan",
         border_style="dim",
         show_lines=False,
@@ -148,10 +150,20 @@ def _build_screener_table() -> Table:
         oi_d15 = st.oi_history.delta_pct(900_000)
         oi_d1h = st.oi_history.delta_pct(3_600_000)
 
-        recent = st.recent_liqs(300_000)
-        longs_liq  = sum(1 for _, s, _, _ in recent if s == "SELL")
-        shorts_liq = sum(1 for _, s, _, _ in recent if s == "BUY")
-        liq_usd    = sum(q * p for _, _, q, p in recent)
+        if config.LIQUIDATION_FEED_ENABLED:
+            recent = st.recent_liqs(300_000)
+            longs_liq  = sum(1 for _, s, _, _ in recent if s == "SELL")
+            shorts_liq = sum(1 for _, s, _, _ in recent if s == "BUY")
+            liq_usd    = sum(q * p for _, _, q, p in recent)
+            liq_counts = Text.assemble(
+                (str(longs_liq),  "red"),
+                ("/",             "dim"),
+                (str(shorts_liq), "green"),
+            )
+            liq_vol = _fmt_liq_vol(liq_usd)
+        else:
+            liq_counts = Text("off", style="dim")
+            liq_vol = Text("off", style="dim")
 
         alerts.check(sym, st)
 
@@ -165,12 +177,8 @@ def _build_screener_table() -> Table:
             _fmt_cvd(st.trades_5m.cvd()),
             _fmt_taker_pct(st.trades_5m.taker_pct()),
             _fmt_top_cluster(st),
-            Text.assemble(
-                (str(longs_liq),  "red"),
-                ("/",             "dim"),
-                (str(shorts_liq), "green"),
-            ),
-            _fmt_liq_vol(liq_usd),
+            liq_counts,
+            liq_vol,
             _fmt_drift(st.last_event_ts),
         )
     return t
@@ -208,6 +216,13 @@ def _build_alert_panel() -> Panel:
 
 def _build_cluster_panel() -> Panel:
     """Top-2 liq clusters per symbol over the past hour."""
+    if not config.LIQUIDATION_FEED_ENABLED:
+        return Panel(
+            Text("Unavailable on the official public Hyperliquid market feed.", style="dim"),
+            title="[bold cyan]Liq Clusters (1h)[/bold cyan]",
+            border_style="cyan",
+        )
+
     lines = []
     for sym in config.WATCHLIST:
         for c in state[sym].liq_clusters(window_ms=3_600_000, min_count=2)[:2]:

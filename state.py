@@ -18,6 +18,11 @@ class OIHistory:
     def record(self, ts_ms: int, oi: float) -> None:
         self._samples.append((ts_ms, oi))
 
+    def latest_ts(self) -> int | None:
+        if not self._samples:
+            return None
+        return self._samples[-1][0]
+
     def delta_pct(self, lookback_ms: int) -> float | None:
         """Return OI % change over the given lookback window, or None if insufficient data.
 
@@ -92,7 +97,8 @@ class SymbolState:
     funding: float = 0.0       # fraction (e.g. 0.001 = 0.1%); next-period rate
     next_funding_ts: int = 0
 
-    # Spot price (polled via REST; used for perp-spot basis)
+    # Reference price used for perp-reference basis. Hyperliquid supplies oraclePx
+    # in asset contexts.
     spot: float = 0.0
 
     # Open interest
@@ -108,7 +114,7 @@ class SymbolState:
     trades_15m: TradeWindow = field(default_factory=lambda: TradeWindow(900_000))
 
     # Mark price snapshots for trend detection: (ts_ms, price)
-    # maxlen=1800 covers 30 minutes at 1-second markPrice cadence
+    # maxlen=1800 covers roughly 30 minutes at a 1-second mark cadence
     mark_history: deque = field(default_factory=lambda: deque(maxlen=1800))
 
     # Last event timestamp for WS drift detection
@@ -130,6 +136,18 @@ class SymbolState:
         self.liqs.append((ts_ms, side, qty, price))
         if ts_ms > self.last_event_ts:
             self.last_event_ts = ts_ms
+
+    def record_oi(
+        self, ts_ms: int, oi: float, min_interval_ms: int | None = None
+    ) -> None:
+        self.oi = oi
+        latest_ts = self.oi_history.latest_ts()
+        if (
+            latest_ts is None
+            or min_interval_ms is None
+            or ts_ms - latest_ts >= min_interval_ms
+        ):
+            self.oi_history.record(ts_ms, oi)
 
     def record_mark(self, ts_ms: int) -> None:
         if self.mark:

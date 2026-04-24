@@ -20,19 +20,24 @@
 
 ## 1. What this tool is (and isn't)
 
-`sniper-streamer` is a **read-only context dashboard** for Binance USDT-M
-perpetual futures. It subscribes to public WebSocket streams and polls a
-couple of REST endpoints to show you, in real time:
+`sniper-streamer` is a **read-only context dashboard** for Hyperliquid
+USDC-margined perpetual futures. It subscribes to public WebSocket streams
+and polls the public info endpoint to show you, in real time:
 
-- Where perp prices are relative to spot
+- Where perp prices are relative to Hyperliquid's oracle/reference price
 - Who is crowded and how hard (funding, open interest, taker flow)
-- Where the market just wiped out leveraged positions (liquidations)
-- Where wiped-out positions cluster — the "stop clusters" sniping targets
+- WebSocket feed health via per-symbol drift
 
 It does **not** place orders, it does **not** give trade signals you should
 blindly follow, and it does **not** replace real risk management. It's a
 screener that helps you *see* structural pressure building up so you can
 form your own thesis.
+
+Note: Hyperliquid's official public market subscriptions do not expose an
+all-market liquidation stream equivalent to Binance `!forceOrder@arr`. The
+liquidation columns, liquidation-cluster panel, and liquidation-dependent
+alerts are therefore disabled by default unless you add a separate liquidation
+data source.
 
 ---
 
@@ -42,17 +47,18 @@ form your own thesis.
 liquidated. Different from the last trade price, and this difference is
 what makes a "wick-based" liquidation possible vs not.
 
-**Funding rate** — a small payment that flows between longs and shorts
-every 8 hours on Binance. When more people are long than short, longs pay
-shorts (positive funding). Extreme funding means crowded positioning.
+**Funding rate** — a small payment that flows between longs and shorts.
+Hyperliquid funding settles hourly. When more people are long than short,
+longs pay shorts (positive funding). Extreme funding means crowded
+positioning.
 
 **Open interest (OI)** — the total number of contracts currently open.
 Rising OI with rising price = new longs. Rising OI with falling price =
 new shorts. OI collapsing = positions are being closed or liquidated.
 
-**Basis** — the gap between the perp price and the spot price, expressed
-as a percentage. Positive basis = perp trades above spot (typical in
-bull markets). Deeply negative basis = forced selling in the perp book.
+**Basis** — the gap between the perp mark and Hyperliquid's oracle/reference
+price, expressed as a percentage. Positive basis = perp trades above the
+oracle; negative basis = perp trades below it.
 
 **CVD (Cumulative Volume Delta)** — the running sum of aggressive buy
 volume minus aggressive sell volume. An "aggressive buy" is a trade
@@ -62,7 +68,9 @@ crossing the spread.
 
 **Liquidation** — when a leveraged position gets forcibly closed by the
 exchange. A long liquidation is a forced SELL order; a short liquidation
-is a forced BUY order. This matters when you see the `L/S` counts.
+is a forced BUY order. The current official Hyperliquid public market feed
+does not provide the all-market liquidation stream this dashboard used on
+Binance, so liquidation views show `off`.
 
 ---
 
@@ -81,13 +89,13 @@ or, equivalently:
 
 The dashboard takes over the full terminal (`screen=True` in
 `dashboard.py`). Press `Ctrl+C` to quit. When it starts, OI delta columns
-may briefly show `-` until the REST seeder finishes backfilling 12 hours
-of OI history (handled by `_seed_oi_history` in `feeds.py`).
+show `-` until enough Hyperliquid info snapshots have been collected at
+runtime.
 
 The watchlist lives in `config.py`:
 
 ```python
-WATCHLIST = ["btcusdt", "ethusdt", "solusdt", "suiusdt", "wifusdt", "bnbusdt"]
+WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
 ```
 
 Edit and restart to track different symbols.
@@ -121,7 +129,7 @@ One row per symbol in your watchlist. Columns left to right:
 
 ### Symbol
 
-Just the ticker in bold (e.g. `BTCUSDT`). No color coding.
+Just the ticker in bold (e.g. `BTC-USDC`). No color coding.
 
 ### Mark $
 
@@ -131,11 +139,8 @@ mark is 0 (no data yet), this cell shows a dim `-`.
 
 ### Funding%
 
-The **predicted next-period funding rate**, shown as a percentage (e.g.
-`+0.0123%`). Binance pushes this in the `markPrice` stream as the `r`
-field — note that it's the predicted rate for the *next* funding, not
-the current one. This is actually the more useful number for positioning
-signal.
+The current Hyperliquid funding rate from `activeAssetCtx`, shown as a
+percentage (e.g. `+0.0123%`). Hyperliquid funding settles hourly.
 
 **Colors (from `_fmt_funding` in `dashboard.py`):**
 
@@ -150,9 +155,9 @@ cell turns bold red or bold green, the FUNDING alert also fires.
 
 ### Basis%
 
-The perp-vs-spot gap, computed as `(mark − spot) / spot × 100`, shown
-with 3 decimals. Positive = perp trades above spot, negative = perp
-below spot. Uses standard `_signed` coloring:
+The perp-vs-oracle gap, computed as `(mark − oraclePx) / oraclePx × 100`,
+shown with 3 decimals. Positive = perp trades above the oracle, negative =
+perp below the oracle. Uses standard `_signed` coloring:
 
 | Color | Meaning |
 |---|---|
@@ -160,9 +165,9 @@ below spot. Uses standard `_signed` coloring:
 | red | Negative basis (perp discount — often forced-selling territory) |
 | dim | Exactly zero / no data |
 
-For sniping context, a *deeply* negative basis (worse than `−0.3%`)
-combined with heavy liquidations is a classic capitulation fingerprint
-— see the [CAPITULATION alert](#capitulation-setup) below.
+For sniping context, a *deeply* negative basis (worse than `−0.3%`) can
+still flag stressed perp pricing, but the CAPITULATION alert remains
+disabled until liquidation data is available.
 
 ### OI Δ15m% and OI Δ1h%
 
@@ -226,7 +231,10 @@ cascades when it unwinds.
 
 ### Top Cluster
 
-Shows the **largest** liquidation cluster in the last hour as a distance
+Shows `off` by default because Hyperliquid's official public market feed
+does not expose an all-market liquidation stream. If you wire in a separate
+liquidation source and set `LIQUIDATION_FEED_ENABLED = True`, this column
+shows the **largest** liquidation cluster in the last hour as a distance
 from the current mark price, plus an arrow and a side letter. Format:
 
 ```
@@ -261,8 +269,9 @@ now a magnet for the next run.
 
 ### Liqs 5m L/S
 
-Count of liquidation **events** in the last 5 minutes, split by which
-side got wiped:
+Shows `off` by default. With a liquidation feed enabled, this is the count
+of liquidation **events** in the last 5 minutes, split by which side got
+wiped:
 
 ```
 7/2
@@ -277,14 +286,13 @@ means 7 long liquidations (forced SELLs) and 2 short liquidations
 | dim | the `/` separator | — |
 | green | the `S` count (second number) | Shorts getting forcibly closed |
 
-Note: Binance throttles the `!forceOrder@arr` stream to **one event per
-symbol per second**, so during a violent cascade these counts undercount
-the true number of liquidations. Notional totals in the next column
-remain directionally correct.
+The interpretation depends on the liquidation source you add; each venue or
+indexer has different throttling and aggregation behavior.
 
 ### Liq $ 5m
 
-Total notional USD of all liquidations in the last 5 minutes.
+Shows `off` by default. With a liquidation feed enabled, this is the total
+notional USD of all liquidations in the last 5 minutes.
 
 | Color | Threshold |
 |---|---|
@@ -310,10 +318,13 @@ or the feed is having issues.
 
 ## 6. The "Liq Clusters (1h)" panel (bottom right)
 
-This panel lists up to the **top 2 liquidation clusters per symbol**
-over the last hour (`window_ms=3_600_000`, `min_count=2`). A "cluster"
-is a set of liquidation events that happened at similar price levels,
-bucketed into price bins of 0.1% of the current mark
+This panel shows a disabled message by default because the official public
+Hyperliquid market feed does not provide all-market liquidation executions.
+If you wire in a separate liquidation source and set
+`LIQUIDATION_FEED_ENABLED = True`, it lists up to the **top 2 liquidation
+clusters per symbol** over the last hour (`window_ms=3_600_000`,
+`min_count=2`). A "cluster" is a set of liquidation events that happened at
+similar price levels, bucketed into price bins of 0.1% of the current mark
 (`LIQ_CLUSTER_BUCKET_PCT = 0.1` in `config.py`).
 
 ### Line anatomy
@@ -321,7 +332,7 @@ bucketed into price bins of 0.1% of the current mark
 Each line looks like this:
 
 ```
-BTCUSDT ↑L @ 95,000.5000  0.25% away  ×5 $1,234,567
+BTC-USDC ↑L @ 95,000.5000  0.25% away  ×5 $1,234,567
 │       │ │  │            │            │  │
 │       │ │  │            │            │  └─ Total USD notional of liquidations in this cluster
 │       │ │  │            │            └──── Number of liquidation *events* in this cluster
@@ -341,9 +352,8 @@ Breaking each piece down:
 - `↓` the cluster price is **lower** than the current mark
 
 **Side letter (`L` or `S`)** — who got wiped at this level:
-- `L` = **LONG** cluster — longs were forcibly sold out. On Binance,
-  these show up as side=`SELL` forced orders because closing a long
-  position means selling.
+- `L` = **LONG** cluster — longs were forcibly sold out. These show up as
+  side=`SELL` forced orders because closing a long position means selling.
 - `S` = **SHORT** cluster — shorts were forcibly covered. These show up
   as side=`BUY` forced orders.
 
@@ -355,9 +365,8 @@ price, as a percentage. Doesn't say direction (the arrow already did
 that) — just magnitude.
 
 **`×5`** — the count of **liquidation events** that happened inside this
-price bucket. "Events" here means individual force-order messages that
-came through the WebSocket. (Remember the 1-per-symbol-per-second
-throttle — real event counts during a cascade are higher.)
+price bucket. "Events" here means individual liquidation messages that came
+through the configured liquidation source.
 
 **`$1,234,567`** — the total USD notional of all those liquidations
 combined (each event's `qty × price` summed within the bucket).
@@ -392,7 +401,7 @@ condition that stays true doesn't spam the log every refresh.
 ### Line anatomy
 
 ```
-[14:23:07] BTCUSDT LONG_SQUEEZE fund +0.0612%  OI +4.2%  tkr 68%  ↓L cluster -0.25% away
+[14:23:07] BTC-USDC LONG_SQUEEZE fund +0.0612%  OI +4.2%  tkr 68%  ↓L cluster -0.25% away
 │          │        │           │
 │          │        │           └─ The message body (details vary by alert kind)
 │          │        └─── Alert KIND (colored by type — see below)
@@ -429,6 +438,7 @@ FUNDING rate +0.1234% (±0.1% threshold)
 LIQ_VOL 5m vol $2,345,678 (threshold $2,000,000)
 ```
 
+- Disabled by default on Hyperliquid because `LIQUIDATION_FEED_ENABLED = False`.
 - Triggers when total liquidation notional in the last 5 minutes
   exceeds `ALERT_LIQ_VOL_5M_USD` (default $2M).
 - The message shows actual 5m liquidation USD vs the threshold.
@@ -452,12 +462,13 @@ OI_1H 1h OI Δ +4.15% (±3% threshold)
 CLUSTER stop cluster @ 95,000.5000  x5 events  $1,234,567
 ```
 
+- Disabled by default on Hyperliquid because `LIQUIDATION_FEED_ENABLED = False`.
 - Triggers when `st.liq_clusters()` — with its default 5-minute
   window and `min_count=3` — returns at least one cluster. The alert
   reports the top one by notional.
 - **`@ 95,000.5000`** — the price level where the cluster formed.
 - **`x5 events`** — the number of liquidation events detected in that
-  price bucket over the last 5 minutes (remember the throttle caveat).
+  price bucket over the last 5 minutes.
 - **`$1,234,567`** — total USD notional liquidated at that level.
 - Note: unlike the 1-hour Liq Clusters panel on the right, this alert
   uses the tighter 5-minute window and a higher minimum event count,
@@ -473,6 +484,9 @@ where the actionable edge lives.
 ```
 LONG_SQUEEZE fund +0.0612%  OI +4.2%  tkr 68%  ↓L cluster -0.25% away
 ```
+
+Disabled by default on Hyperliquid because it depends on liquidation
+clusters.
 
 Fires when **all four** of these are true:
 1. Funding% ≥ 0.05% (`ALERT_FUNDING_SQUEEZE_PCT`) — longs are paying
@@ -494,6 +508,9 @@ mark the nearest long cluster sits.
 ```
 CAPITULATION liq $823,456  CVD -1.45M  tkr 22%  basis -0.412%
 ```
+
+Disabled by default on Hyperliquid because it depends on liquidation
+notional.
 
 Fires when **all four** are true:
 1. 5m liquidation notional ≥ $500K (`ALERT_LIQ_CAPITULATION_USD`)
@@ -578,6 +595,9 @@ three canonical setups the composite alerts are designed to flag:
 
 ### Long squeeze setup (the LONG_SQUEEZE alert)
 
+This setup is disabled by default on Hyperliquid until an all-market
+liquidation source is wired in.
+
 You're looking for a market where:
 - Funding is bold red in the Funding% column
 - OI Δ1h is solid green (leverage building)
@@ -595,6 +615,9 @@ the snipe — your entry is *after* price takes out the cluster, as the
 book rethickens.
 
 ### Capitulation reversal (the CAPITULATION alert)
+
+This setup is disabled by default on Hyperliquid until an all-market
+liquidation source is wired in.
 
 You're looking for:
 - Liq $ 5m in bold red (big-dollar liquidations)
@@ -661,12 +684,12 @@ All thresholds live in `config.py`. Edit and restart.
 | `ALERT_PRICE_GRIND_PCT` | 0.3 | GRINDING_TRAP 15m price condition |
 | `LIQ_CLUSTER_BUCKET_PCT` | 0.1 | Width of price buckets for clustering |
 | `LIQ_CLUSTER_MIN_COUNT` | 3 | Min events for default clustering |
+| `LIQUIDATION_FEED_ENABLED` | False | Enables liquidation-dependent alerts after you add a feed |
 
 **Smaller symbols need smaller thresholds.** The defaults are calibrated
-for BTC/ETH-scale flow. For a WIF or SUI, you'll want to drop
-`ALERT_LIQ_VOL_5M_USD` to something like $50K–$200K and
-`ALERT_LIQ_CAPITULATION_USD` to a few tens of thousands. Otherwise you
-won't see mid-cap alerts.
+for BTC/ETH-scale flow. For mid-cap Hyperliquid names, you may want to
+lower CVD and OI thresholds after watching a few sessions. Liquidation
+thresholds only matter after you add a liquidation source.
 
 **If you're drowning in alerts**, widen the simple thresholds. If
 you're not seeing anything on a quiet day, that's usually correct —
@@ -681,20 +704,17 @@ Things this tool deliberately does not do, or does imperfectly:
 - **No persistence.** When you quit, history is gone. Two weeks of
   logged data would make this a real research instrument; currently
   it's ephemeral. SQLite writer is a natural next step.
-- **Binance only.** Bybit, OKX, and Hyperliquid have their own
-  liquidation streams with different behaviors. A cascade on Hyperliquid
-  won't show up here.
-- **Liquidation stream is throttled** to one event per symbol per
-  second by Binance. During violent cascades, event counts undercount;
-  notional is directionally correct but not exact.
-- **No spot-side depth data.** The basis calculation uses spot price
-  only. Knowing actual spot book depth would improve the capitulation
-  signal.
+- **No official public all-market liquidation stream.** Hyperliquid's
+  public market subscriptions provide trades and asset contexts, but not
+  the Binance-style forced-order stream this dashboard previously used.
+  Liquidation views are disabled unless you add another source.
+- **No spot-side depth data.** The basis calculation uses Hyperliquid's
+  oracle/reference price only. Knowing actual spot book depth would improve
+  the capitulation signal.
 - **CVD is taker-flow only.** Doesn't see maker-side accumulation.
-- **OI is polled at 60s.** Short-timeframe OI bursts (e.g. a 5-second
-  squeeze) can be missed entirely. The 15m OI delta smooths over this,
-  but if you care about tick-level OI, a dedicated WebSocket feed
-  (Bybit has one; Binance doesn't expose OI over WS) is the fix.
+- **OI is sampled at 60s for deltas.** Hyperliquid `activeAssetCtx`
+  updates current OI faster, but the historical OI delta buffer is sampled
+  once per minute to preserve meaningful 15m/1h windows.
 - **Cluster bucketing depends on the mark.** Buckets are sized as 0.1%
   of the current mark — so in a fast-moving market, bucket boundaries
   shift, and a cluster that's "real" on a static chart may briefly

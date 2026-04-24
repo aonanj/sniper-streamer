@@ -38,8 +38,9 @@ _DEDUP_WINDOW = 300.0  # seconds
 
 def check(sym: str, st: SymbolState) -> None:
     _check_simple(sym, st)
-    _check_long_squeeze(sym, st)
-    _check_capitulation(sym, st)
+    if config.LIQUIDATION_FEED_ENABLED:
+        _check_long_squeeze(sym, st)
+        _check_capitulation(sym, st)
     _check_grinding_trap(sym, st)
 
 
@@ -58,23 +59,25 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         _fire(now, sym, "FUNDING",
               f"rate {funding_pct:+.4f}% (±{config.ALERT_FUNDING_PCT}% threshold)")
 
-    recent_liqs = st.recent_liqs(300_000)
-    liq_vol = sum(q * p for _, _, q, p in recent_liqs)
-    if liq_vol >= config.ALERT_LIQ_VOL_5M_USD:
-        _fire(now, sym, "LIQ_VOL",
-              f"5m vol ${liq_vol:,.0f} (threshold ${config.ALERT_LIQ_VOL_5M_USD:,.0f})")
+    if config.LIQUIDATION_FEED_ENABLED:
+        recent_liqs = st.recent_liqs(300_000)
+        liq_vol = sum(q * p for _, _, q, p in recent_liqs)
+        if liq_vol >= config.ALERT_LIQ_VOL_5M_USD:
+            _fire(now, sym, "LIQ_VOL",
+                  f"5m vol ${liq_vol:,.0f} (threshold ${config.ALERT_LIQ_VOL_5M_USD:,.0f})")
 
     oi_d1h = st.oi_history.delta_pct(3_600_000)
     if oi_d1h is not None and abs(oi_d1h) >= config.ALERT_OI_DELTA_1H_PCT:
         _fire(now, sym, "OI_1H",
               f"1h OI Δ {oi_d1h:+.2f}% (±{config.ALERT_OI_DELTA_1H_PCT}% threshold)")
 
-    clusters = st.liq_clusters()
-    if clusters:
-        top = clusters[0]
-        _fire(now, sym, "CLUSTER",
-              f"stop cluster @ {top['price']:,.4f}  "
-              f"x{top['count']} events  ${top['notional']:,.0f}")
+    if config.LIQUIDATION_FEED_ENABLED:
+        clusters = st.liq_clusters()
+        if clusters:
+            top = clusters[0]
+            _fire(now, sym, "CLUSTER",
+                  f"stop cluster @ {top['price']:,.4f}  "
+                  f"x{top['count']} events  ${top['notional']:,.0f}")
 
 
 # ------------------------------------------------------------------ #

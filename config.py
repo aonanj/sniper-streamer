@@ -1,4 +1,4 @@
-WATCHLIST = ["btcusdt", "ethusdt", "solusdt", "suiusdt", "wifusdt", "bnbusdt"]
+WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
 
 # ── Simple threshold alerts ──────────────────────────────────────────────────
 ALERT_FUNDING_PCT     = 0.10        # |funding| > this (%) fires an alert
@@ -17,7 +17,7 @@ ALERT_LIQ_CAPITULATION_USD  = 500_000  # minimum 5m liq vol for capitulation con
 # Grinding trap: price rising on positioning, not real demand
 ALERT_PRICE_GRIND_PCT       = 0.3      # price must rise this much in 15m (%)
 
-# REST polling cadence (seconds). Binance futs limit is 2400 req/min weighted.
+# REST polling cadence (seconds). Hyperliquid info requests are public snapshots.
 OI_POLL_INTERVAL = 60
 
 # OI history ring buffer depth (samples). At 60s per sample: 720 = 12 hours.
@@ -26,11 +26,12 @@ OI_HISTORY_MAXLEN = 720
 # Liquidation cluster detection
 LIQ_CLUSTER_BUCKET_PCT = 0.1  # price bucket width as % of mark
 LIQ_CLUSTER_MIN_COUNT  = 3    # minimum events in a bucket to flag as cluster
+LIQUIDATION_FEED_ENABLED = False  # Hyperliquid has no official public all-market liq stream
 
 # WebSocket endpoints
-WS_URL    = "wss://fstream.binance.com/market/stream"
-REST_BASE = "https://fapi.binance.com"
-SPOT_BASE = "https://api.binance.com"
+WS_URL   = "wss://api.hyperliquid.xyz/ws"
+INFO_URL = "https://api.hyperliquid.xyz/info"
+HYPERLIQUID_DEX = ""  # empty string = default perp dex
 
 # Dashboard
 DASHBOARD_REFRESH_HZ = 2
