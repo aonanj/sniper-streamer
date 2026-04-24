@@ -5,9 +5,12 @@ Public data only; no API key required.
 WebSocket subscriptions consumed:
   activeAssetCtx  - mark price, funding rate, oracle price, open interest
   trades          - executed trades for CVD/taker flow
+  l2Book          - top-of-book depth, spread, imbalance, resting walls
+  allMids         - cross-asset mids for beta/correlation and spot-basis refresh
 
 Info endpoint polled:
   metaAndAssetCtxs - current asset contexts across perpetual markets
+  spotMetaAndAssetCtxs - spot markets used for true perp-vs-spot basis
 
 Hyperliquid's official public market subscriptions do not expose a Binance
 `!forceOrder@arr` equivalent, so liquidation-derived signals stay disabled
@@ -34,6 +37,8 @@ state: dict[str, SymbolState] = defaultdict(SymbolState)
 
 _QUOTE_SUFFIXES = ("USDC", "USDT", "USD")
 _WARNED_MISSING: set[str] = set()
+_WARNED_SPOT_FALLBACK: set[str] = set()
+_SPOT_COIN_TO_SYMBOL: dict[str, str] = {}
 
 
 # ------------------------------------------------------------------ #
@@ -91,6 +96,23 @@ def _asset_ctx_payload() -> dict[str, str]:
     return payload
 
 
+def _spot_asset_ctx_payload() -> dict[str, str]:
+    return {"type": "spotMetaAndAssetCtxs"}
+
+
+def _canonical_spot_base(base: str | None) -> str:
+    if not base:
+        return ""
+    upper = base.upper()
+    if upper in _SYMBOL_BY_COIN:
+        return upper
+    if upper.startswith("U") and upper[1:] in _SYMBOL_BY_COIN:
+        return upper[1:]
+    if upper.endswith("0") and upper[:-1] in _SYMBOL_BY_COIN:
+        return upper[:-1]
+    return upper
+
+
 # ------------------------------------------------------------------ #
 # Message handlers
 
@@ -111,12 +133,30 @@ def _apply_asset_ctx(
     if mark:
         st.mark = mark
 
+    mid = _to_float(ctx.get("midPx"))
+    if mid:
+        st.mid = mid
+
     if "funding" in ctx:
-        st.funding = _to_float(ctx.get("funding"))
+        st.record_funding(ts_ms, _to_float(ctx.get("funding")))
 
     oracle = _to_float(ctx.get("oraclePx"))
     if oracle:
-        st.spot = oracle
+        st.oracle = oracle
+
+    if "dayNtlVlm" in ctx:
+        st.day_ntl_vlm = _to_float(ctx.get("dayNtlVlm"))
+
+    if "premium" in ctx and ctx.get("premium") is not None:
+        st.premium = _to_float(ctx.get("premium"))
+
+    if "prevDayPx" in ctx:
+        st.prev_day_px = _to_float(ctx.get("prevDayPx"))
+
+    impact = ctx.get("impactPxs")
+    if isinstance(impact, list) and len(impact) >= 2:
+        st.impact_bid_px = _to_float(impact[0])
+        st.impact_ask_px = _to_float(impact[1])
 
     if "openInterest" in ctx:
         min_interval_ms = None if force_oi_sample else config.OI_POLL_INTERVAL * 1000
@@ -153,6 +193,45 @@ def _handle_trade(trade: dict[str, Any]) -> None:
         )
 
 
+def _handle_l2_book(data: dict[str, Any]) -> None:
+    sym = _symbol_for_coin(data.get("coin"))
+    if sym is None:
+        return
+
+    levels = data.get("levels")
+    if not (
+        isinstance(levels, list)
+        and len(levels) >= 2
+        and isinstance(levels[0], list)
+        and isinstance(levels[1], list)
+    ):
+        return
+
+    state[sym].record_book(
+        ts_ms=int(data.get("time") or time.time() * 1000),
+        bids=levels[0],
+        asks=levels[1],
+    )
+
+
+def _handle_all_mids(data: dict[str, Any]) -> None:
+    mids = data.get("mids") if isinstance(data.get("mids"), dict) else data
+    if not isinstance(mids, dict):
+        return
+
+    ts_ms = int(time.time() * 1000)
+    for coin, raw_mid in mids.items():
+        mid = _to_float(raw_mid)
+        sym = _symbol_for_coin(str(coin))
+        if sym is not None:
+            state[sym].record_mid(ts_ms, mid)
+            continue
+
+        spot_sym = _SPOT_COIN_TO_SYMBOL.get(str(coin))
+        if spot_sym is not None:
+            state[spot_sym].record_hl_spot(str(coin), mid)
+
+
 def _handle(msg: dict[str, Any]) -> None:
     channel = msg.get("channel")
     data = msg.get("data")
@@ -169,13 +248,21 @@ def _handle(msg: dict[str, Any]) -> None:
         for trade in trades:
             if isinstance(trade, dict):
                 _handle_trade(trade)
+        return
+
+    if channel == "l2Book" and isinstance(data, dict):
+        _handle_l2_book(data)
+        return
+
+    if channel == "allMids" and isinstance(data, dict):
+        _handle_all_mids(data)
 
 
 # ------------------------------------------------------------------ #
 # WebSocket coroutine
 
 async def _run_subscription_ws(
-    subscriptions: list[dict[str, str]], label: str
+    subscriptions: list[dict[str, Any]], label: str
 ) -> None:
     backoff = 1.0
     while True:
@@ -214,10 +301,17 @@ async def run_ws() -> None:
         {"type": "trades", "coin": coin}
         for coin in _watch_coins()
     ]
+    book_subs = [
+        {"type": "l2Book", "coin": coin}
+        for coin in _watch_coins()
+    ]
+    all_mids_subs = [{"type": "allMids"}]
 
     await asyncio.gather(
         _run_subscription_ws(market_subs, "market-core"),
         _run_subscription_ws(trade_subs, "trades"),
+        _run_subscription_ws(book_subs, "l2-book"),
+        _run_subscription_ws(all_mids_subs, "all-mids"),
     )
 
 
@@ -250,12 +344,72 @@ async def _poll_asset_contexts(
         _WARNED_MISSING.update(new_missing)
 
 
+def _apply_spot_contexts(meta: dict[str, Any], contexts: list[dict[str, Any]]) -> None:
+    tokens = {
+        token.get("index"): str(token.get("name", "")).upper()
+        for token in meta.get("tokens", [])
+        if isinstance(token, dict)
+    }
+    universe = {
+        str(asset.get("name")): asset
+        for asset in meta.get("universe", [])
+        if isinstance(asset, dict)
+    }
+
+    found: set[str] = set()
+    _SPOT_COIN_TO_SYMBOL.clear()
+    for ctx in contexts:
+        if not isinstance(ctx, dict):
+            continue
+        spot_coin = str(ctx.get("coin") or "")
+        asset = universe.get(spot_coin)
+        if not asset:
+            continue
+
+        asset_tokens = asset.get("tokens")
+        if not isinstance(asset_tokens, list) or len(asset_tokens) < 2:
+            continue
+        quote = tokens.get(asset_tokens[1], "")
+        if quote != "USDC":
+            continue
+
+        base = _canonical_spot_base(tokens.get(asset_tokens[0], ""))
+        sym = _SYMBOL_BY_COIN.get(base)
+        if sym is None:
+            continue
+
+        spot_px = _to_float(ctx.get("midPx") or ctx.get("markPx"))
+        if not spot_px:
+            continue
+
+        _SPOT_COIN_TO_SYMBOL[spot_coin] = sym
+        state[sym].record_hl_spot(spot_coin, spot_px)
+        found.add(base)
+
+    missing = set(_SYMBOL_BY_COIN) - found
+    new_missing = missing - _WARNED_SPOT_FALLBACK
+    if new_missing:
+        print(
+            "[INFO] no Hyperliquid spot market for watchlist coin(s); "
+            "using oracle basis fallback: " + ", ".join(sorted(new_missing))
+        )
+        _WARNED_SPOT_FALLBACK.update(new_missing)
+
+
+async def _poll_spot_contexts(client: httpx.AsyncClient) -> None:
+    response = await client.post(config.INFO_URL, json=_spot_asset_ctx_payload())
+    response.raise_for_status()
+    meta, contexts = response.json()
+    _apply_spot_contexts(meta, contexts)
+
+
 async def poll_rest() -> None:
     """Poll current asset contexts every OI_POLL_INTERVAL seconds."""
     async with httpx.AsyncClient(timeout=10) as client:
         while True:
             try:
                 await _poll_asset_contexts(client)
+                await _poll_spot_contexts(client)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

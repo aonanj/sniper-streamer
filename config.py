@@ -4,6 +4,7 @@ WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-u
 ALERT_FUNDING_PCT     = 0.10        # |funding| > this (%) fires an alert
 ALERT_LIQ_VOL_5M_USD  = 2_000_000  # 5-minute liq notional > this ($)
 ALERT_OI_DELTA_1H_PCT = 3.0        # 1h OI % change > this fires an alert
+ALERT_MIN_NOTIONAL_USD = 10_000     # floor for volume-scaled dollar thresholds
 
 # ── Composite setup alerts ───────────────────────────────────────────────────
 # Loaded long squeeze: funding hot, OI rising, buyers crowding, longs stacked below
@@ -12,10 +13,16 @@ ALERT_TAKER_LOW_PCT         = 30.0     # taker% below this = crowded selling / c
 ALERT_FUNDING_SQUEEZE_PCT   = 0.05     # funding (%) threshold for squeeze context
 # Capitulation reversal: forced selling hammering the perp book
 ALERT_CVD_SHARP_NEG_USD     = -500_000 # CVD must be below this ($) for capitulation
+ALERT_CVD_SHARP_NEG_DAY_FRACTION = 0.0005  # CVD threshold scales to 24h volume
 ALERT_BASIS_CAPITULATION    = -0.3     # basis (%) must be below this for capitulation
 ALERT_LIQ_CAPITULATION_USD  = 500_000  # minimum 5m liq vol for capitulation context ($)
+ALERT_LIQ_VOL_5M_DAY_FRACTION = 0.001  # liquidation/proxy threshold scales to 24h volume
 # Grinding trap: price rising on positioning, not real demand
 ALERT_PRICE_GRIND_PCT       = 0.3      # price must rise this much in 15m (%)
+ALERT_PRICE_GRIND_SIGMA     = 1.0      # portable price-move threshold in realized-vol units
+ALERT_FUNDING_DELTA_1H_PCT  = 0.02     # 1h funding change, in percentage points
+ALERT_IMPACT_EXCESS_BPS     = 8.0      # impact width minus natural spread
+ALERT_BOOK_IMBALANCE_PCT    = 25.0     # top-10 book side imbalance threshold
 
 # REST polling cadence (seconds). Hyperliquid info requests are public snapshots.
 OI_POLL_INTERVAL = 60
@@ -23,10 +30,24 @@ OI_POLL_INTERVAL = 60
 # OI history ring buffer depth (samples). At 60s per sample: 720 = 12 hours.
 OI_HISTORY_MAXLEN = 720
 
+# Rolling market histories. allMids is frequent, so samples are throttled.
+PRICE_HISTORY_MAXLEN = 7200
+PRICE_HISTORY_MIN_INTERVAL_MS = 5_000
+FUNDING_HISTORY_MAXLEN = 720
+FUNDING_HISTORY_MIN_INTERVAL_MS = 60_000
+
 # Liquidation cluster detection
 LIQ_CLUSTER_BUCKET_PCT = 0.1  # price bucket width as % of mark
 LIQ_CLUSTER_MIN_COUNT  = 3    # minimum events in a bucket to flag as cluster
 LIQUIDATION_FEED_ENABLED = False  # Hyperliquid has no official public all-market liq stream
+
+# Taker-flow cluster proxy used while public liquidation data is unavailable.
+TAKER_CLUSTER_MIN_USD = 500_000
+TAKER_CLUSTER_MIN_DAY_FRACTION = 0.001
+TAKER_CLUSTER_MIN_COUNT = 3
+TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
+TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6
+TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
 
 # WebSocket endpoints
 WS_URL   = "wss://api.hyperliquid.xyz/ws"
