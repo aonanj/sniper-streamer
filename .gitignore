@@ -27,7 +27,6 @@ data/*.sqlite*
 data/*.db*
 
 # Python cache and build artifacts
-__pycache__/
 *.py[cod]
 .pytest_cache/
 dist/
