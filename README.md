@@ -34,6 +34,28 @@ The watchlist lives in `config.py`:
 WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
 ```
 
+## Data Persistence
+
+The app writes a local SQLite database at `data/sniper_streamer.sqlite3`.
+SQLite runs in WAL mode, so notebooks and ad hoc readers can query the file
+while the streamer is appending.
+
+Persistence runs as a fourth coroutine beside the websocket feed, REST poller,
+and renderer. Feed handlers only enqueue events; a dedicated writer owns disk
+I/O, schema setup, batching, and retention.
+
+Persisted tables:
+
+- `trades` - every valid watched taker trade, used for later CVD/backtesting
+- `liquidations` - every liquidation observed in the trade payload
+- `market_snapshots` - downsampled state snapshots, at most once every 5s per
+  symbol unless funding changes by at least `0.0001` percentage points
+- `alerts` - deduped alerts plus a `snapshot_json` column containing the state
+  values at fire time
+
+Rows older than `PERSIST_RETENTION_DAYS` are purged automatically. The default
+retention is 14 days.
+
 ## Data Sources
 
 WebSocket subscriptions:

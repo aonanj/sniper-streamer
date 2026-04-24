@@ -13,6 +13,7 @@
 .env.*
 .resources/
 .claude/
+agent/
 
 
 
@@ -20,6 +21,10 @@
 
 # Never commit raw AppColl CSV exports (contain client data)
 data/appcoll_exports/*.csv
+
+# Local SQLite persistence
+data/*.sqlite*
+data/*.db*
 
 # Python cache and build artifacts
 __pycache__/

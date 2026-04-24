@@ -30,6 +30,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 import config
+import persistence
 from state import SymbolState
 
 # Shared state - read by dashboard and alerts modules
@@ -175,21 +176,44 @@ def _handle_trade(trade: dict[str, Any]) -> None:
     if side not in {"A", "B"}:
         return
 
+    ts_ms = int(trade.get("time") or time.time() * 1000)
+    qty = _to_float(trade.get("sz"))
+    price = _to_float(trade.get("px"))
+    if qty <= 0 or price <= 0:
+        return
+
     # Hyperliquid trade side is the aggressing side: B = buy, A = sell.
     state[sym].add_trade(
-        ts_ms=int(trade.get("time") or time.time() * 1000),
+        ts_ms=ts_ms,
         is_buyer_maker=(side == "A"),
-        qty=_to_float(trade.get("sz")),
-        price=_to_float(trade.get("px")),
+        qty=qty,
+        price=price,
+    )
+    persistence.enqueue_trade(
+        ts_ms=ts_ms,
+        sym=sym,
+        side="SELL" if side == "A" else "BUY",
+        qty=qty,
+        price=price,
+        raw=trade,
     )
 
     liquidation = trade.get("liquidation")
     if isinstance(liquidation, dict):
+        liq_side = "SELL" if side == "A" else "BUY"
         state[sym].add_liq(
-            ts_ms=int(trade.get("time") or time.time() * 1000),
-            side="SELL" if side == "A" else "BUY",
-            qty=_to_float(trade.get("sz")),
-            price=_to_float(trade.get("px")),
+            ts_ms=ts_ms,
+            side=liq_side,
+            qty=qty,
+            price=price,
+        )
+        persistence.enqueue_liquidation(
+            ts_ms=ts_ms,
+            sym=sym,
+            side=liq_side,
+            qty=qty,
+            price=price,
+            raw=trade,
         )
 
 

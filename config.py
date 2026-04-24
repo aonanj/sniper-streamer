@@ -56,3 +56,14 @@ HYPERLIQUID_DEX = ""  # empty string = default perp dex
 
 # Dashboard
 DASHBOARD_REFRESH_HZ = 2
+
+# SQLite persistence. The writer runs as its own coroutine and keeps WAL enabled
+# so notebooks and other readers can query while the app appends.
+SQLITE_PATH = "data/sniper_streamer.sqlite3"
+PERSIST_RETENTION_DAYS = 14
+PERSIST_BATCH_SIZE = 500
+PERSIST_FLUSH_INTERVAL_SEC = 0.5
+PERSIST_PURGE_INTERVAL_SEC = 3_600
+PERSIST_SNAPSHOT_SCAN_INTERVAL_SEC = 1.0
+PERSIST_SNAPSHOT_MIN_INTERVAL_MS = 5_000
+PERSIST_SNAPSHOT_FUNDING_DELTA_PCT = 0.0001

@@ -18,6 +18,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import config
+import persistence
 from state import SymbolState
 
 
@@ -59,7 +60,7 @@ def _check_simple(sym: str, st: SymbolState) -> None:
     funding_pct = st.funding * 100
 
     if abs(funding_pct) >= config.ALERT_FUNDING_PCT:
-        _fire(now, sym, "FUNDING",
+        _fire(now, sym, st, "FUNDING",
               f"rate {funding_pct:+.4f}% (±{config.ALERT_FUNDING_PCT}% threshold)")
 
     if config.LIQUIDATION_FEED_ENABLED:
@@ -70,25 +71,25 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             config.ALERT_LIQ_VOL_5M_DAY_FRACTION,
         )
         if liq_vol >= liq_threshold:
-            _fire(now, sym, "LIQ_VOL",
+            _fire(now, sym, st, "LIQ_VOL",
                   f"5m vol ${liq_vol:,.0f} (threshold ${liq_threshold:,.0f})")
 
     oi_d1h = st.oi_history.delta_pct(3_600_000)
     if oi_d1h is not None and abs(oi_d1h) >= config.ALERT_OI_DELTA_1H_PCT:
-        _fire(now, sym, "OI_1H",
+        _fire(now, sym, st, "OI_1H",
               f"1h OI Δ {oi_d1h:+.2f}% (±{config.ALERT_OI_DELTA_1H_PCT}% threshold)")
 
     if config.LIQUIDATION_FEED_ENABLED:
         clusters = st.liq_clusters()
         if clusters:
             top = clusters[0]
-            _fire(now, sym, "CLUSTER",
+            _fire(now, sym, st, "CLUSTER",
                   f"stop cluster @ {top['price']:,.4f}  "
                   f"x{top['count']} events  ${top['notional']:,.0f}")
 
     impact = st.impact_excess_bps
     if impact is not None and impact >= config.ALERT_IMPACT_EXCESS_BPS:
-        _fire(now, sym, "THIN_BOOK",
+        _fire(now, sym, st, "THIN_BOOK",
               f"impact excess {impact:.1f}bp over spread")
 
     clusters = st.taker_flow_clusters(window_ms=3_600_000)
@@ -100,7 +101,7 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         )
         if top["notional"] >= threshold:
             side = "BUY" if top["buy"] >= top["sell"] else "SELL"
-            _fire(now, sym, "FLOW_CLUSTER",
+            _fire(now, sym, st, "FLOW_CLUSTER",
                   f"{side} flow cluster @ {top['price']:,.4f}  "
                   f"x{top['count']}  ${top['notional']:,.0f}")
 
@@ -139,7 +140,7 @@ def _check_long_squeeze(sym: str, st: SymbolState) -> None:
     nearest  = min(long_below, key=lambda c: st.mark - c["price"])
     dist_pct = (st.mark - nearest["price"]) / st.mark * 100
     _fire(
-        time.time(), sym, "LONG_SQUEEZE",
+        time.time(), sym, st, "LONG_SQUEEZE",
         f"fund {funding_pct:+.4f}%  OI +{oi_d1h:.1f}%  "
         f"tkr {tp5:.0f}%  ↓L cluster -{dist_pct:.2f}% away",
     )
@@ -173,7 +174,7 @@ def _check_capitulation(sym: str, st: SymbolState) -> None:
         return
 
     _fire(
-        time.time(), sym, "CAPITULATION",
+        time.time(), sym, st, "CAPITULATION",
         f"liq ${liq_vol:,.0f}  CVD {cvd5/1_000_000:.2f}M  "
         f"tkr {tp5:.0f}%  basis {st.basis_pct:+.3f}%",
     )
@@ -205,7 +206,7 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
 
     book_note = "ask-heavy book" if ask_heavy else "thin impact book"
     _fire(
-        time.time(), sym, "LONG_SQUEEZE",
+        time.time(), sym, st, "LONG_SQUEEZE",
         f"fund {funding_pct:+.4f}%  FΔ {funding_delta or 0:+.4f}%  "
         f"OI +{oi_d1h:.1f}%  tkr {tp5:.0f}%  {book_note} {impact:.1f}bp",
     )
@@ -230,7 +231,7 @@ def _check_flow_capitulation(sym: str, st: SymbolState) -> None:
         return
 
     _fire(
-        time.time(), sym, "CAPITULATION",
+        time.time(), sym, st, "CAPITULATION",
         f"CVD {cvd5/1_000_000:.2f}M <= {cvd_threshold/1_000_000:.2f}M  "
         f"tkr {tp5:.0f}%  basis {st.basis_pct:+.3f}%  impact {impact:.1f}bp",
     )
@@ -267,7 +268,7 @@ def _check_grinding_trap(sym: str, st: SymbolState) -> None:
         return
 
     _fire(
-        time.time(), sym, "GRINDING_TRAP",
+        time.time(), sym, st, "GRINDING_TRAP",
         f"px +{px_d15:.2f}% 15m ({px_sigma or 0:.1f}σ)  "
         f"CVD {cvd5/1_000_000:.2f}M  fund {st.funding*100:+.4f}%  "
         f"FΔ {funding_delta or 0:+.4f}%  OI +{oi_d15:.2f}% 15m",
@@ -277,9 +278,17 @@ def _check_grinding_trap(sym: str, st: SymbolState) -> None:
 # ------------------------------------------------------------------ #
 # Internals
 
-def _fire(ts: float, sym: str, kind: str, message: str) -> None:
+def _fire(ts: float, sym: str, st: SymbolState, kind: str, message: str) -> None:
     cutoff = ts - _DEDUP_WINDOW
     for a in _log:
         if a.sym == sym and a.kind == kind and a.ts >= cutoff:
             return
     _log.appendleft(Alert(ts=ts, sym=sym, kind=kind, message=message))
+    ts_ms = int(ts * 1000)
+    persistence.enqueue_alert(
+        ts_ms=ts_ms,
+        sym=sym,
+        kind=kind,
+        message=message,
+        snapshot=persistence.state_snapshot(sym, st, ts_ms),
+    )
