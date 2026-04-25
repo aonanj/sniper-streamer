@@ -11,7 +11,7 @@ import math
 import time
 from datetime import datetime, timezone
 
-from rich.console import Console
+from rich.console import Console, JustifyMethod
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -24,10 +24,57 @@ from feeds import state
 from state import SymbolState
 
 console = Console()
+_SESSION_STARTED_MONOTONIC = time.monotonic()
+
+_EMPHASIS = "bold underline"
+_COLUMN_MIN_WIDTHS = {
+    "Book": 23,
+    "Drift C/T/B": 15,
+}
+_SYMBOL_PALETTE = (
+    "#60a5fa",  # blue
+    "#c084fc",  # purple
+    "#22d3ee",  # cyan
+    "#a78bfa",  # violet
+    "#38bdf8",  # sky
+    "#818cf8",  # indigo
+    "#93c5fd",  # light blue
+    "#f0abfc",  # orchid
+)
+_SYMBOL_COLORS = {
+    sym.lower(): _SYMBOL_PALETTE[idx % len(_SYMBOL_PALETTE)]
+    for idx, sym in enumerate(config.WATCHLIST)
+}
 
 
 # ------------------------------------------------------------------ #
 # Formatting helpers
+
+def _emphasis(style: str = "") -> str:
+    return f"{_EMPHASIS} {style}".strip()
+
+
+def _symbol_style(sym: str) -> str:
+    key = sym.lower()
+    color = _SYMBOL_COLORS.get(key)
+    if color is None:
+        color = _SYMBOL_PALETTE[sum(ord(ch) for ch in key) % len(_SYMBOL_PALETTE)]
+    return _emphasis(color)
+
+
+def _fmt_symbol(sym: str, suffix: str = "") -> Text:
+    return Text(f"{sym.upper()}{suffix}", style=_symbol_style(sym))
+
+
+def _fmt_runtime() -> str:
+    elapsed = int(time.monotonic() - _SESSION_STARTED_MONOTONIC)
+    hours, rem = divmod(elapsed, 3_600)
+    mins, secs = divmod(rem, 60)
+    if hours >= 24:
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours:02d}:{mins:02d}:{secs:02d}"
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
 
 def _signed(val: float, decimals: int = 2, suffix: str = "") -> Text:
     s = f"{val:+.{decimals}f}{suffix}"
@@ -38,9 +85,9 @@ def _signed(val: float, decimals: int = 2, suffix: str = "") -> Text:
 def _fmt_funding(pct: float) -> Text:
     s = f"{pct:+.4f}%"
     if pct > config.ALERT_FUNDING_PCT:
-        return Text(s, style="bold red")
+        return Text(s, style=_emphasis("red"))
     if pct < -config.ALERT_FUNDING_PCT:
-        return Text(s, style="bold green")
+        return Text(s, style=_emphasis("green"))
     return Text(s, style="white")
 
 
@@ -75,9 +122,9 @@ def _fmt_taker_pct(pct: float | None) -> Text:
         return Text("-", style="dim")
     s = f"{pct:.1f}%"
     if pct >= config.ALERT_TAKER_HIGH_PCT:
-        return Text(s, style="bold red")    # crowded buying
+        return Text(s, style=_emphasis("red"))    # crowded buying
     if pct <= config.ALERT_TAKER_LOW_PCT:
-        return Text(s, style="bold green")  # crowded selling
+        return Text(s, style=_emphasis("green"))  # crowded selling
     if pct >= 55:
         return Text(s, style="red")
     if pct <= 45:
@@ -101,7 +148,7 @@ def _fmt_funding_stack(st: SymbolState) -> Text:
 def _fmt_basis(st: SymbolState) -> Text:
     source = "s" if st.basis_source == "spot" else "o"
     text = _signed(st.basis_pct, 3, "")
-    text.append(source, style="dim")
+    text.append(f" {source}", style="bright_white")
     return text
 
 
@@ -114,7 +161,7 @@ def _fmt_oi_vol(st: SymbolState) -> Text:
     ratio = st.oi_volume_ratio
     if ratio is None:
         return Text("-", style="dim")
-    style = "bold red" if ratio >= 2.0 else "yellow" if ratio >= 1.0 else "dim"
+    style = _emphasis("red") if ratio >= 2.0 else "yellow" if ratio >= 1.0 else "dim"
     return Text(f"{ratio:.2f}x", style=style)
 
 
@@ -168,7 +215,7 @@ def _fmt_impact(st: SymbolState, sym: str = "") -> Text:
         return Text("-", style="dim")
     threshold = config.ALERT_IMPACT_EXCESS_BPS_OVERRIDES.get(sym, config.ALERT_IMPACT_EXCESS_BPS)
     style = (
-        "bold red"
+        _emphasis("red")
         if impact >= threshold
         else "yellow" if impact >= threshold / 2
         else "dim"
@@ -274,7 +321,7 @@ def _fmt_liq_vol(usd: float) -> Text:
     if not usd:
         return Text("-", style="dim")
     if usd >= config.ALERT_LIQ_VOL_5M_USD:
-        return Text(f"${usd:,.0f}", style="bold red")
+        return Text(f"${usd:,.0f}", style=_emphasis("red"))
     return Text(f"${usd:,.0f}", style="white")
 
 
@@ -286,14 +333,14 @@ def _build_screener_table() -> Table:
     mins_to_funding = math.ceil((3_600 - (time.time() % 3_600)) / 60)
     t = Table(
         title=(
-            f"[bold]Hyperliquid USDC Perp Screener[/bold]  "
-            f"[{now_utc} UTC | funding in {mins_to_funding}m]"
+            "[bold underline]Hyperliquid USDC Perp Screener[/]  "
+            f"[{now_utc} UTC | run {_fmt_runtime()} | funding in {mins_to_funding}m]"
         ),
-        header_style="bold cyan",
+        header_style=_emphasis("cyan"),
         border_style="dim",
         show_lines=False,
     )
-    for name, justify in [
+    columns: list[tuple[str, JustifyMethod]] = [
         ("Symbol",      "left"),
         ("Mark $",      "right"),
         ("24h%",        "right"),
@@ -311,8 +358,9 @@ def _build_screener_table() -> Table:
         ("Flow Clus",   "right"),
         ("β/ρ BTC",     "right"),
         ("Drift C/T/B", "right"),
-    ]:
-        t.add_column(name, justify=justify)
+    ]
+    for name, justify in columns:
+        t.add_column(name, justify=justify, min_width=_COLUMN_MIN_WIDTHS.get(name))
 
     for sym in config.WATCHLIST:
         st = state[sym]
@@ -320,7 +368,7 @@ def _build_screener_table() -> Table:
         alerts.check(sym, st)
 
         t.add_row(
-            f"[bold]{sym.upper()}[/bold]",
+            _fmt_symbol(sym),
             f"{st.mark:,.4f}" if st.mark else Text("-", style="dim"),
             _fmt_24h(st),
             _fmt_funding_stack(st),
@@ -343,14 +391,14 @@ def _build_screener_table() -> Table:
 
 _ALERT_STYLES: dict[str, str] = {
     "FUNDING":        "yellow",
-    "LIQ_VOL":        "bold red",
+    "LIQ_VOL":        _emphasis("red"),
     "OI_1H":          "magenta",
     "CLUSTER":        "cyan",
-    "LONG_SQUEEZE":   "bold red",
-    "SHORT_SQUEEZE":  "bold green",
-    "CAPITULATION":   "bold green",
-    "GRINDING_TRAP":  "bold yellow",
-    "THIN_BOOK":      "bold red",
+    "LONG_SQUEEZE":   _emphasis("red"),
+    "SHORT_SQUEEZE":  _emphasis("green"),
+    "CAPITULATION":   _emphasis("green"),
+    "GRINDING_TRAP":  _emphasis("yellow"),
+    "THIN_BOOK":      _emphasis("red"),
     "FLOW_CLUSTER":   "cyan",
 }
 
@@ -366,12 +414,12 @@ def _build_alert_panel() -> Panel:
             kind_style = _ALERT_STYLES.get(a.kind, "white")
             lines.append(Text.assemble(
                 (f"[{ts_str}] ", "dim"),
-                (f"{a.sym.upper()} ", "bold white"),
+                _fmt_symbol(a.sym, " "),
                 (f"{a.kind} ",        kind_style),
                 (a.message,           "white"),
             ))
         body = Text("\n").join(lines)
-    return Panel(body, title="[bold yellow]Alerts[/bold yellow]", border_style="yellow")
+    return Panel(body, title="[bold underline yellow]Alerts[/]", border_style="yellow")
 
 
 def _build_cluster_panel() -> Panel:
@@ -389,7 +437,7 @@ def _build_cluster_panel() -> Panel:
                 style = "red" if dominant == "BUY" else "green"
                 dist_pct = abs(c["price"] - st.mark) / st.mark * 100
                 lines.append(Text.assemble(
-                    (f"{sym.upper()} ", "bold white"),
+                    _fmt_symbol(sym, " "),
                     (f"{arrow}{dominant[0]} ", style),
                     (f"@ {c['price']:,.4f}  ", "cyan"),
                     (f"{dist_pct:.2f}% away  ", "dim"),
@@ -406,7 +454,7 @@ def _build_cluster_panel() -> Panel:
             ]
         return Panel(
             Text("\n").join(lines),
-            title="[bold cyan]Flow Clusters (1h)[/bold cyan]",
+            title="[bold underline cyan]Flow Clusters (1h)[/]",
             border_style="cyan",
         )
 
@@ -420,7 +468,7 @@ def _build_cluster_panel() -> Panel:
             style     = "red" if dominant == "LONG" else "green"
             dist_pct  = abs(c["price"] - st.mark) / st.mark * 100 if st.mark else 0
             lines.append(Text.assemble(
-                (f"{sym.upper()} ",             "bold white"),
+                _fmt_symbol(sym, " "),
                 (f"{arrow}{dominant[0]} ",       style),
                 (f"@ {c['price']:,.4f}  ",       "cyan"),
                 (f"{dist_pct:.2f}% away  ",      "dim"),
@@ -431,7 +479,7 @@ def _build_cluster_panel() -> Panel:
         lines = [Text("No clusters (need ≥2 liqs at same level in past 1h).", style="dim")]
     return Panel(
         Text("\n").join(lines),
-        title="[bold cyan]Liq Clusters (1h)[/bold cyan]",
+        title="[bold underline cyan]Liq Clusters (1h)[/]",
         border_style="cyan",
     )
 
