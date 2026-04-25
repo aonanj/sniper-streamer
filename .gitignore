@@ -28,6 +28,7 @@ data/*.db*
 
 # Python cache and build artifacts
 *.py[cod]
+__pycache__/
 .pytest_cache/
 dist/
 build/
