@@ -162,14 +162,15 @@ def _fmt_book(st: SymbolState) -> Text:
     return text
 
 
-def _fmt_impact(st: SymbolState) -> Text:
+def _fmt_impact(st: SymbolState, sym: str = "") -> Text:
     impact = st.impact_excess_bps
     if impact is None:
         return Text("-", style="dim")
+    threshold = config.ALERT_IMPACT_EXCESS_BPS_OVERRIDES.get(sym, config.ALERT_IMPACT_EXCESS_BPS)
     style = (
         "bold red"
-        if impact >= config.ALERT_IMPACT_EXCESS_BPS
-        else "yellow" if impact >= config.ALERT_IMPACT_EXCESS_BPS / 2
+        if impact >= threshold
+        else "yellow" if impact >= threshold / 2
         else "dim"
     )
     return Text(f"{impact:.1f}bp", style=style)
@@ -332,7 +333,7 @@ def _build_screener_table() -> Table:
             _fmt_taker_pct(st.trades_5m.taker_pct()),
             _fmt_avg_trade(st),
             _fmt_book(st),
-            _fmt_impact(st),
+            _fmt_impact(st, sym),
             _fmt_flow_cluster(st),
             _fmt_beta_corr(sym, st),
             _fmt_drift_stack(st),
@@ -341,15 +342,16 @@ def _build_screener_table() -> Table:
 
 
 _ALERT_STYLES: dict[str, str] = {
-    "FUNDING":       "yellow",
-    "LIQ_VOL":       "bold red",
-    "OI_1H":         "magenta",
-    "CLUSTER":       "cyan",
-    "LONG_SQUEEZE":  "bold red",
-    "CAPITULATION":  "bold green",
-    "GRINDING_TRAP": "bold yellow",
-    "THIN_BOOK":     "bold red",
-    "FLOW_CLUSTER":  "cyan",
+    "FUNDING":        "yellow",
+    "LIQ_VOL":        "bold red",
+    "OI_1H":          "magenta",
+    "CLUSTER":        "cyan",
+    "LONG_SQUEEZE":   "bold red",
+    "SHORT_SQUEEZE":  "bold green",
+    "CAPITULATION":   "bold green",
+    "GRINDING_TRAP":  "bold yellow",
+    "THIN_BOOK":      "bold red",
+    "FLOW_CLUSTER":   "cyan",
 }
 
 

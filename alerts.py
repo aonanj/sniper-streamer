@@ -45,6 +45,7 @@ def check(sym: str, st: SymbolState) -> None:
     else:
         _check_structural_long_squeeze(sym, st)
         _check_flow_capitulation(sym, st)
+    _check_structural_short_squeeze(sym, st)
     _check_grinding_trap(sym, st)
 
 
@@ -88,7 +89,10 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                   f"x{top['count']} events  ${top['notional']:,.0f}")
 
     impact = st.impact_excess_bps
-    if impact is not None and impact >= config.ALERT_IMPACT_EXCESS_BPS:
+    impact_threshold = config.ALERT_IMPACT_EXCESS_BPS_OVERRIDES.get(
+        sym, config.ALERT_IMPACT_EXCESS_BPS
+    )
+    if impact is not None and impact >= impact_threshold:
         _fire(now, sym, st, "THIN_BOOK",
               f"impact excess {impact:.1f}bp over spread")
 
@@ -209,6 +213,40 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
         time.time(), sym, st, "LONG_SQUEEZE",
         f"fund {funding_pct:+.4f}%  FΔ {funding_delta or 0:+.4f}%  "
         f"OI +{oi_d1h:.1f}%  tkr {tp5:.0f}%  {book_note} {impact:.1f}bp",
+    )
+
+
+def _check_structural_short_squeeze(sym: str, st: SymbolState) -> None:
+    """Loaded-short structure: shorts crowded, leverage building, tape sell-dominated.
+
+    Fires when negative funding (shorts paying longs), OI rising, sell-dominated
+    taker flow, and the perp is already trading below spot — the combination that
+    precedes violent short-covering rallies.
+    """
+    if not st.mark:
+        return
+
+    funding_pct = st.funding * 100
+    oi_d1h = st.oi_history.delta_pct(3_600_000)
+    tp5 = st.trades_5m.taker_pct()
+
+    if not (
+        funding_pct <= -config.ALERT_FUNDING_SQUEEZE_PCT
+        and oi_d1h is not None and oi_d1h >= config.ALERT_OI_DELTA_1H_PCT
+        and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
+        and st.basis_pct < 0
+    ):
+        return
+
+    bid_heavy = (
+        st.book_imbalance_pct is not None
+        and st.book_imbalance_pct >= config.ALERT_BOOK_IMBALANCE_PCT
+    )
+    book_note = "bid-heavy book" if bid_heavy else f"basis {st.basis_pct:+.3f}%"
+    _fire(
+        time.time(), sym, st, "SHORT_SQUEEZE",
+        f"fund {funding_pct:+.4f}%  OI +{oi_d1h:.1f}%  "
+        f"tkr {tp5:.0f}%  {book_note}",
     )
 
 

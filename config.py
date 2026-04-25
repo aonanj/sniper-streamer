@@ -1,27 +1,30 @@
 WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
 
 # ── Simple threshold alerts ──────────────────────────────────────────────────
-ALERT_FUNDING_PCT     = 0.10        # |funding| > this (%) fires an alert
+ALERT_FUNDING_PCT     = 0.005       # |funding| > this (%) fires an alert; session range 0.001–0.007%/hr
 ALERT_LIQ_VOL_5M_USD  = 2_000_000  # 5-minute liq notional > this ($)
-ALERT_OI_DELTA_1H_PCT = 3.0        # 1h OI % change > this fires an alert
+ALERT_OI_DELTA_1H_PCT = 1.0        # 1h OI % change > this fires an alert; session peak ~0.6%/hr
 ALERT_MIN_NOTIONAL_USD = 10_000     # floor for volume-scaled dollar thresholds
 
 # ── Composite setup alerts ───────────────────────────────────────────────────
 # Loaded long squeeze: funding hot, OI rising, buyers crowding, longs stacked below
 ALERT_TAKER_HIGH_PCT        = 60.0     # taker% above this = crowded buying tape
 ALERT_TAKER_LOW_PCT         = 30.0     # taker% below this = crowded selling / capitulation
-ALERT_FUNDING_SQUEEZE_PCT   = 0.05     # funding (%) threshold for squeeze context
+ALERT_FUNDING_SQUEEZE_PCT   = 0.001    # funding (%) threshold for squeeze composites; BNB/DOGE cap at 0.00125%
 # Capitulation reversal: forced selling hammering the perp book
 ALERT_CVD_SHARP_NEG_USD     = -500_000 # CVD must be below this ($) for capitulation
 ALERT_CVD_SHARP_NEG_DAY_FRACTION = 0.0005  # CVD threshold scales to 24h volume
-ALERT_BASIS_CAPITULATION    = -0.3     # basis (%) must be below this for capitulation
+ALERT_BASIS_CAPITULATION    = -0.20    # basis (%) must be below this; session min was SOL -0.289%, ETH -0.239%
 ALERT_LIQ_CAPITULATION_USD  = 500_000  # minimum 5m liq vol for capitulation context ($)
 ALERT_LIQ_VOL_5M_DAY_FRACTION = 0.001  # liquidation/proxy threshold scales to 24h volume
 # Grinding trap: price rising on positioning, not real demand
 ALERT_PRICE_GRIND_PCT       = 0.3      # price must rise this much in 15m (%)
-ALERT_PRICE_GRIND_SIGMA     = 1.0      # portable price-move threshold in realized-vol units
+ALERT_PRICE_GRIND_SIGMA     = 1.5      # portable price-move threshold; 1.0 caused BNB/ICP noise
 ALERT_FUNDING_DELTA_1H_PCT  = 0.02     # 1h funding change, in percentage points
-ALERT_IMPACT_EXCESS_BPS     = 8.0      # impact width minus natural spread
+ALERT_IMPACT_EXCESS_BPS     = 8.0      # impact width minus natural spread (global default)
+ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {  # per-symbol overrides; ICP structural avg=6.44bp p95=9.29bp
+    "icp-usdc": 13.0,
+}
 ALERT_BOOK_IMBALANCE_PCT    = 25.0     # top-10 book side imbalance threshold
 
 # REST polling cadence (seconds). Hyperliquid info requests are public snapshots.
@@ -43,7 +46,7 @@ LIQUIDATION_FEED_ENABLED = False  # Hyperliquid has no official public all-marke
 
 # Taker-flow cluster proxy used while public liquidation data is unavailable.
 TAKER_CLUSTER_MIN_USD = 500_000
-TAKER_CLUSTER_MIN_DAY_FRACTION = 0.001
+TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015  # raised from 0.001; SOL floor lifts from $184k→$276k
 TAKER_CLUSTER_MIN_COUNT = 3
 TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
 TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6

@@ -221,12 +221,17 @@ Simple alerts:
 
 - `FUNDING` - absolute funding exceeds `ALERT_FUNDING_PCT`
 - `OI_1H` - 1-hour OI change exceeds `ALERT_OI_DELTA_1H_PCT`
-- `THIN_BOOK` - impact excess exceeds `ALERT_IMPACT_EXCESS_BPS`
+- `THIN_BOOK` - impact excess exceeds `ALERT_IMPACT_EXCESS_BPS` (or the
+  per-symbol override in `ALERT_IMPACT_EXCESS_BPS_OVERRIDES`)
 - `FLOW_CLUSTER` - aggressive taker-flow cluster exceeds a volume-scaled threshold
 
 Composite alerts:
 
-- `LONG_SQUEEZE` - funding/OI/taker flow are crowded long and the book is thin
+- `LONG_SQUEEZE` - positive funding at or above `ALERT_FUNDING_SQUEEZE_PCT`,
+  OI rising, crowded buying tape, and a thin or ask-heavy book
+- `SHORT_SQUEEZE` - negative funding at or below `-ALERT_FUNDING_SQUEEZE_PCT`,
+  OI rising, sell-dominated tape, and the perp trading below spot; fires when
+  shorts are crowded and the setup is fragile for a violent short-covering rally
 - `CAPITULATION` - sell CVD, low taker%, negative basis, and thin impact book
 - `GRINDING_TRAP` - price is rising in realized-vol units while CVD is flat or
   negative and OI/funding are building
@@ -235,19 +240,30 @@ Dollar thresholds scale against `dayNtlVlm`, with a floor from
 `ALERT_MIN_NOTIONAL_USD`, so BTC/ETH-scale settings do not make DOGE/ICP
 effectively silent.
 
+`THIN_BOOK` uses a per-symbol threshold when an entry exists in
+`ALERT_IMPACT_EXCESS_BPS_OVERRIDES`; ICP's structural impact excess sits at a
+higher baseline than the other watchlist assets, so its override prevents
+constant noise from a condition that is normal for that market.
+
 ## Tuning
 
 Important knobs in `config.py`:
 
 ```python
+ALERT_FUNDING_PCT = 0.005           # fires when |funding| > 0.005%/hr (~0.12%/day)
+ALERT_OI_DELTA_1H_PCT = 1.0        # fires on a 1%+ OI surge in one hour
+ALERT_FUNDING_SQUEEZE_PCT = 0.001  # composite trigger; BNB/DOGE sit at 0.00125% max-cap
+
 ALERT_CVD_SHARP_NEG_DAY_FRACTION = 0.0005
 ALERT_LIQ_VOL_5M_DAY_FRACTION = 0.001
-ALERT_PRICE_GRIND_SIGMA = 1.0
+ALERT_PRICE_GRIND_SIGMA = 1.5      # raised from 1.0 to reduce BNB/ICP noise
+ALERT_BASIS_CAPITULATION = -0.20   # basis threshold for CAPITULATION composite
 ALERT_FUNDING_DELTA_1H_PCT = 0.02
-ALERT_IMPACT_EXCESS_BPS = 8.0
+ALERT_IMPACT_EXCESS_BPS = 8.0      # global default; override per symbol below
+ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {"icp-usdc": 13.0}
 ALERT_BOOK_IMBALANCE_PCT = 25.0
 
-TAKER_CLUSTER_MIN_DAY_FRACTION = 0.001
+TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015
 TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
 TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6
 TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
@@ -256,6 +272,12 @@ TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
 Start by watching the dashboard for a session before tightening thresholds.
 Mid-cap names often need lower absolute notional thresholds, but the
 day-volume fractions should keep the first pass usable across the watchlist.
+
+The funding-related thresholds (`ALERT_FUNDING_PCT`, `ALERT_FUNDING_SQUEEZE_PCT`)
+are compared to `st.funding * 100` in the alert engine, where `st.funding` is the
+raw per-hour rate fraction from the Hyperliquid API (e.g. `0.0000125` → `0.00125%/hr`).
+Keep this in mind when adjusting: `0.005` means "fire when funding exceeds 0.5%/day
+equivalent", not 0.5% per period.
 
 ## Limitations
 
