@@ -25,6 +25,7 @@ data/appcoll_exports/*.csv
 # Local SQLite persistence
 data/*.sqlite*
 data/*.db*
+data/exports/
 
 # Python cache and build artifacts
 *.py[cod]

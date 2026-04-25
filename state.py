@@ -413,11 +413,11 @@ class SymbolState:
 
     @property
     def basis_reference(self) -> float:
-        return self.hl_spot or self.oracle
+        return self.hl_spot if self._spot_basis_is_reliable() else self.oracle
 
     @property
     def basis_source(self) -> str:
-        return "spot" if self.hl_spot else "oracle"
+        return "spot" if self._spot_basis_is_reliable() else "oracle"
 
     @property
     def basis_pct(self) -> float:
@@ -425,6 +425,21 @@ class SymbolState:
         if not ref:
             return 0.0
         return (self.mark - ref) / ref * 100
+
+    @property
+    def spot_basis_pct(self) -> float | None:
+        if not self.hl_spot:
+            return None
+        return (self.mark - self.hl_spot) / self.hl_spot * 100
+
+    def _spot_basis_is_reliable(self) -> bool:
+        spot_basis = self.spot_basis_pct
+        if spot_basis is None:
+            return False
+        return (
+            abs(spot_basis - self.premium_pct)
+            <= config.BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT
+        )
 
     @property
     def oracle_basis_pct(self) -> float:
@@ -553,6 +568,7 @@ class SymbolState:
         self,
         window_ms: int = 3_600_000,
         min_notional: float | None = None,
+        min_count: int | None = None,
     ) -> list[dict]:
         bucket_pct = self.flow_cluster_bucket_pct()
         if min_notional is None:
@@ -560,6 +576,8 @@ class SymbolState:
                 config.TAKER_CLUSTER_MIN_USD,
                 config.TAKER_CLUSTER_MIN_DAY_FRACTION,
             )
+        if min_count is None:
+            min_count = config.TAKER_CLUSTER_MIN_COUNT
         if window_ms <= 60_000:
             trade_window = self.trades_1m
         elif window_ms <= 300_000:
@@ -572,7 +590,7 @@ class SymbolState:
             mark=self.mark or self.mid,
             bucket_pct=bucket_pct,
             min_notional=min_notional,
-            min_count=config.TAKER_CLUSTER_MIN_COUNT,
+            min_count=min_count,
         )
 
     def recent_liqs(self, window_ms: int = 300_000) -> list[tuple]:

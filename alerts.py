@@ -1,8 +1,9 @@
 """
 Threshold-based alert engine — simple signals and composite setup alerts.
 
-All alerts are de-duplicated within a 5-minute window per (symbol, kind) pair
+Most alerts are de-duplicated within a 5-minute window per (symbol, kind) pair
 so a sustained condition fires once rather than on every dashboard refresh.
+Flow-cluster alerts use a longer side-level dedupe window.
 
 Composite setups
 ────────────────
@@ -32,6 +33,7 @@ class Alert:
 
 _log: deque[Alert] = deque(maxlen=50)
 _DEDUP_WINDOW = 300.0  # seconds
+_last_fired_by_key: dict[str, float] = {}
 
 
 # ------------------------------------------------------------------ #
@@ -89,25 +91,35 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                   f"x{top['count']} events  ${top['notional']:,.0f}")
 
     impact = st.impact_excess_bps
-    impact_threshold = config.ALERT_IMPACT_EXCESS_BPS_OVERRIDES.get(
-        sym, config.ALERT_IMPACT_EXCESS_BPS
-    )
+    impact_threshold = _impact_threshold(sym)
     if impact is not None and impact >= impact_threshold:
         _fire(now, sym, st, "THIN_BOOK",
               f"impact excess {impact:.1f}bp over spread")
 
-    clusters = st.taker_flow_clusters(window_ms=3_600_000)
+    flow_threshold = _volume_scaled_threshold(
+        st,
+        config.TAKER_CLUSTER_ALERT_MIN_USD,
+        config.TAKER_CLUSTER_ALERT_MIN_DAY_FRACTION,
+        config.TAKER_CLUSTER_ALERT_FLOOR_USD,
+    )
+    clusters = st.taker_flow_clusters(
+        window_ms=3_600_000,
+        min_notional=flow_threshold,
+        min_count=config.TAKER_CLUSTER_ALERT_MIN_COUNT,
+    )
     if clusters:
         top = clusters[0]
-        threshold = st.volume_scaled_threshold(
-            config.TAKER_CLUSTER_MIN_USD,
-            config.TAKER_CLUSTER_MIN_DAY_FRACTION,
+        dominance = (
+            max(top["buy"], top["sell"]) / top["notional"] * 100
+            if top["notional"] else 0.0
         )
-        if top["notional"] >= threshold:
+        if dominance >= config.TAKER_CLUSTER_ALERT_DOMINANCE_PCT:
             side = "BUY" if top["buy"] >= top["sell"] else "SELL"
             _fire(now, sym, st, "FLOW_CLUSTER",
                   f"{side} flow cluster @ {top['price']:,.4f}  "
-                  f"x{top['count']}  ${top['notional']:,.0f}")
+                  f"x{top['count']}  ${top['notional']:,.0f}",
+                  dedup_key=f"FLOW_CLUSTER:{sym}:{side}",
+                  dedup_window=config.TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC)
 
 
 # ------------------------------------------------------------------ #
@@ -194,25 +206,30 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
     oi_d1h = st.oi_history.delta_pct(3_600_000)
     tp5 = st.trades_5m.taker_pct()
     impact = st.impact_excess_bps
+    impact_threshold = _impact_threshold(sym)
     ask_heavy = (
         st.book_imbalance_pct is not None
         and st.book_imbalance_pct <= -config.ALERT_BOOK_IMBALANCE_PCT
     )
+    thin_book = impact is not None and impact >= impact_threshold
 
     if not (
         funding_pct >= config.ALERT_FUNDING_SQUEEZE_PCT
         and (funding_delta is None or funding_delta >= config.ALERT_FUNDING_DELTA_1H_PCT)
         and oi_d1h is not None and oi_d1h >= config.ALERT_OI_DELTA_1H_PCT
         and tp5 is not None and tp5 >= config.ALERT_TAKER_HIGH_PCT
-        and impact is not None and impact >= config.ALERT_IMPACT_EXCESS_BPS
+        and (thin_book or ask_heavy)
     ):
         return
 
-    book_note = "ask-heavy book" if ask_heavy else "thin impact book"
+    if ask_heavy:
+        book_note = f"ask-heavy book {st.book_imbalance_pct:.0f}%"
+    else:
+        book_note = f"thin impact book {impact:.1f}bp"
     _fire(
         time.time(), sym, st, "LONG_SQUEEZE",
         f"fund {funding_pct:+.4f}%  FΔ {funding_delta or 0:+.4f}%  "
-        f"OI +{oi_d1h:.1f}%  tkr {tp5:.0f}%  {book_note} {impact:.1f}bp",
+        f"OI +{oi_d1h:.1f}%  tkr {tp5:.0f}%  {book_note}",
     )
 
 
@@ -255,6 +272,7 @@ def _check_flow_capitulation(sym: str, st: SymbolState) -> None:
     cvd5 = st.trades_5m.cvd()
     tp5 = st.trades_5m.taker_pct()
     impact = st.impact_excess_bps
+    impact_threshold = _impact_threshold(sym)
     cvd_threshold = -st.volume_scaled_threshold(
         abs(config.ALERT_CVD_SHARP_NEG_USD),
         config.ALERT_CVD_SHARP_NEG_DAY_FRACTION,
@@ -264,7 +282,7 @@ def _check_flow_capitulation(sym: str, st: SymbolState) -> None:
         cvd5 <= cvd_threshold
         and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
         and st.basis_pct <= config.ALERT_BASIS_CAPITULATION
-        and impact is not None and impact >= config.ALERT_IMPACT_EXCESS_BPS
+        and impact is not None and impact >= impact_threshold
     ):
         return
 
@@ -316,11 +334,39 @@ def _check_grinding_trap(sym: str, st: SymbolState) -> None:
 # ------------------------------------------------------------------ #
 # Internals
 
-def _fire(ts: float, sym: str, st: SymbolState, kind: str, message: str) -> None:
-    cutoff = ts - _DEDUP_WINDOW
-    for a in _log:
-        if a.sym == sym and a.kind == kind and a.ts >= cutoff:
-            return
+def _impact_threshold(sym: str) -> float:
+    return config.ALERT_IMPACT_EXCESS_BPS_OVERRIDES.get(
+        sym, config.ALERT_IMPACT_EXCESS_BPS
+    )
+
+
+def _volume_scaled_threshold(
+    st: SymbolState,
+    cap_usd: float,
+    day_fraction: float,
+    floor_usd: float,
+) -> float:
+    if st.day_ntl_vlm <= 0 or day_fraction <= 0:
+        return cap_usd
+    return max(floor_usd, min(cap_usd, st.day_ntl_vlm * day_fraction))
+
+
+def _fire(
+    ts: float,
+    sym: str,
+    st: SymbolState,
+    kind: str,
+    message: str,
+    *,
+    dedup_key: str | None = None,
+    dedup_window: float = _DEDUP_WINDOW,
+) -> None:
+    key = dedup_key or f"{sym}:{kind}"
+    cutoff = ts - dedup_window
+    _prune_dedup(ts)
+    if _last_fired_by_key.get(key, 0.0) >= cutoff:
+        return
+    _last_fired_by_key[key] = ts
     _log.appendleft(Alert(ts=ts, sym=sym, kind=kind, message=message))
     ts_ms = int(ts * 1000)
     persistence.enqueue_alert(
@@ -330,3 +376,11 @@ def _fire(ts: float, sym: str, st: SymbolState, kind: str, message: str) -> None
         message=message,
         snapshot=persistence.state_snapshot(sym, st, ts_ms),
     )
+
+
+def _prune_dedup(ts: float) -> None:
+    retention = max(_DEDUP_WINDOW, config.TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC)
+    cutoff = ts - retention * 2
+    stale = [key for key, fired_ts in _last_fired_by_key.items() if fired_ts < cutoff]
+    for key in stale:
+        _last_fired_by_key.pop(key, None)

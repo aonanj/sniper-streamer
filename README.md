@@ -86,7 +86,9 @@ Info endpoint polling:
 - `spotMetaAndAssetCtxs` - Hyperliquid spot markets for true perp-vs-spot basis
 
 For basis, the dashboard prefers Hyperliquid spot when the watched asset has a
-USDC spot book. If there is no spot market, it falls back to `oraclePx`.
+USDC spot book. If there is no spot market, or if spot basis diverges from
+Hyperliquid's premium by more than
+`BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT`, it falls back to `oraclePx`.
 
 ## Layout
 
@@ -223,7 +225,8 @@ Simple alerts:
 - `OI_1H` - 1-hour OI change exceeds `ALERT_OI_DELTA_1H_PCT`
 - `THIN_BOOK` - impact excess exceeds `ALERT_IMPACT_EXCESS_BPS` (or the
   per-symbol override in `ALERT_IMPACT_EXCESS_BPS_OVERRIDES`)
-- `FLOW_CLUSTER` - aggressive taker-flow cluster exceeds a volume-scaled threshold
+- `FLOW_CLUSTER` - aggressive taker-flow cluster exceeds a stricter
+  alert-only volume-scaled threshold and is at least 70% one-sided
 
 Composite alerts:
 
@@ -236,14 +239,16 @@ Composite alerts:
 - `GRINDING_TRAP` - price is rising in realized-vol units while CVD is flat or
   negative and OI/funding are building
 
-Dollar thresholds scale against `dayNtlVlm`, with a floor from
+Display-level dollar thresholds scale against `dayNtlVlm`, with a floor from
 `ALERT_MIN_NOTIONAL_USD`, so BTC/ETH-scale settings do not make DOGE/ICP
-effectively silent.
+effectively silent. Flow-cluster alerts use a separate, stricter alert floor,
+daily-volume fraction, trade count, dominance check, and 30-minute side-level
+dedupe so the Alerts panel does not repeat every visible cluster.
 
 `THIN_BOOK` uses a per-symbol threshold when an entry exists in
-`ALERT_IMPACT_EXCESS_BPS_OVERRIDES`; ICP's structural impact excess sits at a
-higher baseline than the other watchlist assets, so its override prevents
-constant noise from a condition that is normal for that market.
+`ALERT_IMPACT_EXCESS_BPS_OVERRIDES`; this keeps structurally high-impact
+markets like ICP from firing constantly while allowing tighter markets like BTC
+to alert on genuinely unusual thinness.
 
 ## Tuning
 
@@ -251,19 +256,31 @@ Important knobs in `config.py`:
 
 ```python
 ALERT_FUNDING_PCT = 0.005           # fires when |funding| > 0.005%/hr (~0.12%/day)
-ALERT_OI_DELTA_1H_PCT = 1.0        # fires on a 1%+ OI surge in one hour
+ALERT_OI_DELTA_1H_PCT = 0.75       # fires on an extreme 1h OI surge for this watchlist
 ALERT_FUNDING_SQUEEZE_PCT = 0.001  # composite trigger; BNB/DOGE sit at 0.00125% max-cap
 
 ALERT_CVD_SHARP_NEG_DAY_FRACTION = 0.0005
 ALERT_LIQ_VOL_5M_DAY_FRACTION = 0.001
 ALERT_PRICE_GRIND_SIGMA = 1.5      # raised from 1.0 to reduce BNB/ICP noise
 ALERT_BASIS_CAPITULATION = -0.20   # basis threshold for CAPITULATION composite
-ALERT_FUNDING_DELTA_1H_PCT = 0.02
-ALERT_IMPACT_EXCESS_BPS = 8.0      # global default; override per symbol below
-ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {"icp-usdc": 13.0}
-ALERT_BOOK_IMBALANCE_PCT = 25.0
+ALERT_FUNDING_DELTA_1H_PCT = 0.001
+ALERT_IMPACT_EXCESS_BPS = 4.0      # global default; override per symbol below
+ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {
+    "bnb-usdc": 3.0,
+    "btc-usdc": 2.0,
+    "doge-usdc": 8.0,
+    "icp-usdc": 13.0,
+}
+ALERT_BOOK_IMBALANCE_PCT = 50.0
+BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT = 0.5
 
 TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015
+TAKER_CLUSTER_ALERT_FLOOR_USD = 25_000
+TAKER_CLUSTER_ALERT_MIN_USD = 5_000_000
+TAKER_CLUSTER_ALERT_MIN_DAY_FRACTION = 0.01
+TAKER_CLUSTER_ALERT_MIN_COUNT = 10
+TAKER_CLUSTER_ALERT_DOMINANCE_PCT = 70.0
+TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC = 1_800.0
 TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
 TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6
 TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
@@ -276,8 +293,8 @@ day-volume fractions should keep the first pass usable across the watchlist.
 The funding-related thresholds (`ALERT_FUNDING_PCT`, `ALERT_FUNDING_SQUEEZE_PCT`)
 are compared to `st.funding * 100` in the alert engine, where `st.funding` is the
 raw per-hour rate fraction from the Hyperliquid API (e.g. `0.0000125` → `0.00125%/hr`).
-Keep this in mind when adjusting: `0.005` means "fire when funding exceeds 0.5%/day
-equivalent", not 0.5% per period.
+Keep this in mind when adjusting: `0.005` means "fire when funding exceeds
+0.005%/hr, or about 0.12%/day equivalent", not 0.5% per period.
 
 ## Limitations
 
