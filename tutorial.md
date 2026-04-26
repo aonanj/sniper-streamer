@@ -326,13 +326,39 @@ A stale trade feed (`T` in red) means the CVD, Taker5, and AvgTrd values are not
 Displays up to 10 recent alerts. Each line:
 
 ```
-[HH:MM:SS]  SYMBOL  ALERT_KIND  details
+[HH:MM:SS]  SYMBOL  ALERT_KIND  Bias: ... | Why: ... | Evidence: ...
 ```
 
 Alerts are deduplicated: most symbol/kind pairs will not re-fire within a
 5-minute window. Flow-cluster alerts use a longer side-level dedupe window
 because the visible cluster panel can keep showing the same high-volume node for
 an hour.
+
+The details are grouped this way so the alert is useful under time pressure:
+
+**`Bias`** — the margin action the signal points toward. Composite alerts use
+directional language such as `open SHORT / close LONG` or `open LONG / close
+SHORT`. Simple alerts often say `weak alone` or `context` because a single
+metric should not be treated as a full entry signal.
+
+**Strength in parentheses** — how actionable the alert is by itself. `strong`
+means multiple conditions are aligned. `moderate` means the setup is plausible
+but needs confirmation. `weak alone` and `context` mean the alert is supporting
+evidence only.
+
+**`Why`** — the plain-English trading thesis: which side is crowded, whether
+positions are opening or closing, whether the book is thin, or whether a move is
+late-stage exhaustion.
+
+**`Evidence`** — the specific metrics that caused the alert. These are shown
+with labels and semicolon separators so you can quickly compare the alert to the
+main table: funding, OI change, taker-buy percentage, CVD, basis, impact, book
+imbalance, liquidation volume, or flow-cluster size.
+
+For margin sniping, the important sequence is: first identify the side at risk
+(`Bias`), then decide whether the signal is actionable (`Strength`), then check
+the listed `Evidence` against the main table before entering or closing a
+position.
 
 ### Simple Alerts
 
@@ -342,13 +368,26 @@ These fire when a single threshold is breached.
 
 Fires when the absolute funding rate exceeds 0.005%/hr (≈ 0.12%/day). Either positive or negative. This is the lowest-bar alert — it signals that positioning has moved to a level where it is costing leveraged holders meaningfully. It is necessary but not sufficient for a squeeze setup.
 
+The details state whether positive funding is a short watch / long-exit clue, or
+negative funding is a long watch / short-exit clue. It is marked `weak alone`
+because funding only tells you who is paying; it does not prove that leverage is
+still opening or that the book is ready to move.
+
 **OI_1H** — magenta
 
 Fires when 1-hour open interest has changed by more than 0.75%. A rapid OI surge means new leveraged positions opened at scale in a short window. Combined with directional taker flow, this tells you who opened them. Combined with thin book, it tells you the unwind could be disorderly.
 
+The details distinguish `leverage opening` from `deleveraging / take-profit
+clue`. Rising OI adds fuel to a squeeze setup; falling OI suggests positions are
+already closing and the move may be more mature.
+
 **THIN_BOOK** — bold red
 
 Fires when impact excess exceeds the symbol's threshold. A thin book by itself is not a setup — thinness is structural in some markets. But thin book combined with elevated funding, rising OI, and one-sided flow means any forced unwind will have minimal cushion.
+
+The details call this a `cascade amplifier`. It does not choose long or short by
+itself; it tells you that whichever crowded side is forced out may move price
+farther because liquidity is thin.
 
 **FLOW_CLUSTER** — cyan
 
@@ -358,6 +397,11 @@ one-sided. This is the taker-flow analog to a liquidation cluster — a price zo
 where a large amount of aggressive trading has concentrated. The bottom-right
 panel can still show smaller clusters for context; the alert is reserved for
 material, directional clusters.
+
+The details label the cluster as a `long crowding zone` or `short crowding
+zone`, then show the cluster price, trade count, notional, and one-sided
+dominance. Treat this as context for where crowded entries may sit, not as a
+standalone entry.
 
 ### Composite Alerts
 
@@ -373,6 +417,11 @@ All of the following must be true:
 
 This alert says: longs are crowded, more longs keep opening, the book cannot absorb a forced unwind, and taker flow confirms the crowding. The setup is loaded for a downside cascade if price reverses and the weakest longs start getting liquidated.
 
+The details use `Bias: open SHORT / close LONG (strong)` because this is the
+cleanest short-side sniping setup: long crowding, rising leverage, buyer-heavy
+tape, and a thin or ask-heavy book all point to long exits becoming forced sell
+pressure.
+
 **SHORT_SQUEEZE** — bold green
 
 All of the following must be true:
@@ -382,6 +431,10 @@ All of the following must be true:
 - Perp is trading below spot (negative basis)
 
 This alert says: shorts are crowded, they have pushed the perp below spot, more shorts keep opening, and the setup is fragile for a violent short-covering rally if price moves up even modestly.
+
+The details use `Bias: open LONG / close SHORT (strong)` because shorts are
+paying, short-side leverage is building, the tape is sell-dominated, and
+negative basis adds mean-reversion pressure back toward spot.
 
 **CAPITULATION** — bold green
 
@@ -393,6 +446,11 @@ All of the following must be true:
 
 This alert identifies forced selling into a thin book. The selling is not organized — it looks like liquidation-driven unloading. A CAPITULATION alert can mark the exhaustion point of a downside move, where all the weak longs have been forced out and the market is ready to mean-revert upward. Going long into capitulation is higher risk than going long before a cascade (because the move has already happened), but the reversal can also be sharp.
 
+The details use `Bias: close SHORT / consider LONG (strong but late)`. The
+priority is usually exit management if you were already short; a fresh long
+needs extra confirmation because the alert fires after forced selling is already
+underway.
+
 **GRINDING_TRAP** — bold yellow
 
 All of the following must be true:
@@ -402,6 +460,10 @@ All of the following must be true:
 - OI is expanding
 
 This is a structural warning rather than an immediate trigger. Price is grinding up, but there is no real aggressive buying behind it — CVD would be positive if buyers were driving it. Instead, the price is rising because sellers are pulling their asks (a thin book rising) while funding and OI build. This is the setup most likely to reverse sharply when the last buyer exhausts. The GRINDING_TRAP alert says "this move is fragile — funding is rising, longs are building, but no one is actually chasing it aggressively."
+
+The details use `Bias: avoid LONG / probe SHORT (moderate)`. It is weaker than
+LONG_SQUEEZE because the alert is about fragility, not confirmed unwind. Use it
+to stop chasing a long and watch for rollover confirmation.
 
 ---
 
@@ -463,10 +525,14 @@ In a squeeze context, a large buy cluster forming just above current price while
 The Alerts panel shows:
 
 ```
-[14:32:11]  SOL-USDC  LONG_SQUEEZE  fund=+0.012%/hr oi_delta=+2.1% taker%=67
+[14:32:11]  SOL-USDC  LONG_SQUEEZE  Bias: open SHORT / close LONG (strong) | Why: crowded longs are building into a thin or ask-heavy book | Evidence: funding +0.0120%; funding 1h +0.0040pp; OI 1h +2.1%; taker buy 67%; impact thin 4.2bp
 ```
 
-This composite alert tells you multiple conditions are simultaneously true: funding is elevated (longs are paying), OI has been rising (new longs are still opening), and the taker tape is crowded with buyers. This is your first reason to look at SOL closely.
+This composite alert tells you the candidate action first: look for a short
+entry, or close/reduce an existing long. The evidence says funding is elevated
+(longs are paying), OI has been rising (new longs are still opening), the taker
+tape is crowded with buyers, and the book is thin enough for a forced unwind to
+travel. This is your first reason to look at SOL closely.
 
 ---
 
@@ -560,10 +626,15 @@ These indicators are often concurrent: a CAPITULATION alert usually fires alongs
 The Alerts panel shows:
 
 ```
-[09:14:44]  ETH-USDC  SHORT_SQUEEZE  fund=−0.009%/hr oi_delta=+1.4% taker%=28 basis=−0.31%
+[09:14:44]  ETH-USDC  SHORT_SQUEEZE  Bias: open LONG / close SHORT (strong) | Why: crowded shorts may cover into spot/bid support | Evidence: funding -0.0090%; OI 1h +1.4%; taker buy 28%; basis -0.310%; bid-heavy book
 ```
 
-Funding is deeply negative (shorts are paying longs), OI is rising (new shorts are still opening), the tape is sell-dominated (28% taker buy = 72% aggressive selling), and the perp is trading 0.31% below spot. This is the short-squeeze fuel stack: shorts are crowded, they have driven the perp below spot, and they are still pressing.
+The alert points to a long entry or a short exit before showing the evidence.
+Funding is deeply negative (shorts are paying longs), OI is rising (new shorts
+are still opening), the tape is sell-dominated (28% taker buy = 72% aggressive
+selling), and the perp is trading 0.31% below spot. This is the short-squeeze
+fuel stack: shorts are crowded, they have driven the perp below spot, and they
+are still pressing.
 
 ---
 

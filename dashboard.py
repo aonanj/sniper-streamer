@@ -403,6 +403,29 @@ _ALERT_STYLES: dict[str, str] = {
 }
 
 
+_ALERT_DETAIL_LABEL_STYLES = {
+    "Bias": "bold cyan",
+    "Why": "bold white",
+    "Evidence": "bold magenta",
+}
+
+
+def _format_alert_detail(message: str) -> Text:
+    parts = message.split(" | ")
+    detail = Text()
+    for idx, part in enumerate(parts):
+        if idx:
+            detail.append(" | ", style="dim")
+        label, sep, value = part.partition(": ")
+        label_style = _ALERT_DETAIL_LABEL_STYLES.get(label)
+        if sep and label_style:
+            detail.append(f"{label}: ", style=label_style)
+            detail.append(value, style="white")
+        else:
+            detail.append(part, style="white")
+    return detail
+
+
 def _build_alert_panel() -> Panel:
     recent = alerts.recent(10)
     if not recent:
@@ -412,12 +435,13 @@ def _build_alert_panel() -> Panel:
         for a in recent:
             ts_str = datetime.fromtimestamp(a.ts, tz=timezone.utc).strftime("%H:%M:%S")
             kind_style = _ALERT_STYLES.get(a.kind, "white")
-            lines.append(Text.assemble(
+            line = Text.assemble(
                 (f"[{ts_str}] ", "dim"),
                 _fmt_symbol(a.sym, " "),
                 (f"{a.kind} ",        kind_style),
-                (a.message,           "white"),
-            ))
+            )
+            line.append_text(_format_alert_detail(a.message))
+            lines.append(line)
         body = Text("\n").join(lines)
     return Panel(body, title="[bold underline yellow]Alerts[/]", border_style="yellow")
 
