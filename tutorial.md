@@ -138,11 +138,11 @@ The threshold for bold coloring is ±0.005% per hour (roughly ±0.12%/day, or ab
 
 The delta is often more actionable than the level. A moderate absolute funding rate that is accelerating upward means the crowding is still developing and the window may still be early.
 
-### Basis% s/o
+### Basis%
 
-The difference between the perpetual mark price and the best available spot reference, expressed as a percentage. The suffix letter tells you which reference was used:
+The difference between the perpetual mark price and the best available spot reference, expressed as a percentage. No suffix means the dashboard used true Hyperliquid spot, which is the preferred basis reference.
 
-- **s** — true Hyperliquid spot price (preferred, more accurate)
+- **No suffix** — true Hyperliquid spot price (preferred, more accurate)
 - **o** — oracle price (fallback when no Hyperliquid spot market exists, or
   when spot basis is too far out of line with Hyperliquid's premium)
 
@@ -293,12 +293,13 @@ Two values: BTC beta and BTC return correlation over recent history.
 
 - **Beta** — how much this asset moves per unit of BTC move (e.g., 1.4 means it moves 1.4% when BTC moves 1%)
 - **ρ (rho)** — correlation coefficient (-1 to +1) of 1-minute returns
+- Format: `0.90/0.18` means beta `0.90`, correlation `0.18`. The BTC row itself shows `base`; rows without enough history show `-`.
 
 **Color**:
 
 - **Red** — high correlation (≥ 0.6). The asset is moving largely with BTC. A squeeze in this asset may be partially explained by BTC.
 - **Green** — low correlation (≤ 0.2). The asset is moving independently. A squeeze here is idiosyncratic — and often more violent.
-- **White** — moderate correlation.
+- **Yellow** — moderate correlation (> 0.2 and < 0.6). The asset is partly moving with BTC, so treat idiosyncratic squeeze signals with more caution.
 
 A high-beta, low-correlation asset is particularly interesting: it amplifies BTC moves when correlated but can also move violently on its own crowding dynamics. When you see a squeeze setup forming on a low-correlation asset while BTC is flat, that is a purer signal.
 
@@ -487,7 +488,7 @@ Look at the SOL row and check each relevant column:
 
 **Impact**: Bold red — impact excess is above the threshold. A forced unwind would cause real slippage.
 
-**β/ρ BTC**: `β=0.9 / ρ=0.18` in green — low BTC correlation. This setup is largely idiosyncratic to SOL, not just BTC dragging it around.
+**β/ρ BTC**: `0.90/0.18` in green — low BTC correlation. This setup is largely idiosyncratic to SOL, not just BTC dragging it around.
 
 All of these are consistent and reinforcing. This is a high-quality setup.
 
@@ -570,7 +571,7 @@ Funding is deeply negative (shorts are paying longs), OI is rising (new shorts a
 
 **Fund/FΔ1h**: `−0.009% / ↓−0.003%` in bold green — funding is already negative and getting *more* negative. Shorts are being added continuously.
 
-**Basis% s**: `−0.31% (s)` — the perp is 0.31% below Hyperliquid spot. This is meaningful: arbitrageurs and spot holders have an incentive to sell spot and buy perp to capture this basis, which mechanically bids the perp back up toward spot. The more negative basis becomes, the stronger that mean-reversion pull.
+**Basis%**: `−0.31` — the perp is 0.31% below Hyperliquid spot. This is meaningful: arbitrageurs and spot holders have an incentive to sell spot and buy perp to capture this basis, which mechanically bids the perp back up toward spot. The more negative basis becomes, the stronger that mean-reversion pull.
 
 **OI Δ15m%**: `+2.3%` — open interest is still rising rapidly. New short positions are opening.
 
@@ -582,7 +583,7 @@ Funding is deeply negative (shorts are paying longs), OI is rising (new shorts a
 
 **Impact**: Yellow — elevated thinness, not yet at alert threshold but notable.
 
-**β/ρ BTC**: `β=1.2 / ρ=0.14` — low BTC correlation. ETH is moving on its own dynamics, not BTC drag.
+**β/ρ BTC**: `1.20/0.14` in green — low BTC correlation. ETH is moving on its own dynamics, not BTC drag.
 
 ---
 

@@ -123,11 +123,11 @@ Current funding rate, then the 1-hour funding-rate change in percentage
 points. Funding level tells you the current crowding state; funding velocity
 tells you whether stress is still building.
 
-### Basis% s/o
+### Basis%
 
 Perp mark versus the best available reference:
 
-- `s` means true Hyperliquid spot basis
+- no suffix means true Hyperliquid spot basis
 - `o` means oracle fallback basis
 
 This matters because the oracle is smoothed. Spot basis is the better

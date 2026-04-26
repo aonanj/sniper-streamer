@@ -32,14 +32,14 @@ _COLUMN_MIN_WIDTHS = {
     "Drift C/T/B": 15,
 }
 _SYMBOL_PALETTE = (
-    "#60a5fa",  # blue
-    "#c084fc",  # purple
-    "#22d3ee",  # cyan
-    "#a78bfa",  # violet
-    "#38bdf8",  # sky
-    "#818cf8",  # indigo
-    "#93c5fd",  # light blue
-    "#f0abfc",  # orchid
+    "#4da3ff",  # blue
+    "#ff5fd7",  # magenta
+    "#00d7ff",  # cyan
+    "#af87ff",  # violet
+    "#ffaf5f",  # orange
+    "#d787ff",  # purple
+    "#87afff",  # periwinkle
+    "#ff87d7",  # pink
 )
 _SYMBOL_COLORS = {
     sym.lower(): _SYMBOL_PALETTE[idx % len(_SYMBOL_PALETTE)]
@@ -146,9 +146,9 @@ def _fmt_funding_stack(st: SymbolState) -> Text:
 
 
 def _fmt_basis(st: SymbolState) -> Text:
-    source = "s" if st.basis_source == "spot" else "o"
     text = _signed(st.basis_pct, 3, "")
-    text.append(f" {source}", style="bright_white")
+    if st.basis_source == "oracle":
+        text.append(" o", style=_emphasis("bright_white"))
     return text
 
 
@@ -345,7 +345,7 @@ def _build_screener_table() -> Table:
         ("Mark $",      "right"),
         ("24h%",        "right"),
         ("Fund/FΔ1h",   "right"),
-        ("Basis% s/o",  "right"),
+        ("Basis%",      "right"),
         ("Prem%",       "right"),
         ("OI Δ15m%",   "right"),
         ("OI/Vol",      "right"),
