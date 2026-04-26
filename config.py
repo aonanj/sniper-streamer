@@ -1,4 +1,4 @@
-WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
+WATCHLIST = ["btc-usdc", "eth-usdc", "xrp-usdc", "sol-usdc", "doge-usdc", "hype-usdc"]
 
 # ── Simple threshold alerts ──────────────────────────────────────────────────
 ALERT_FUNDING_PCT     = 0.005       # |funding| > this (%) fires an alert; session range 0.001–0.007%/hr
@@ -23,10 +23,8 @@ ALERT_PRICE_GRIND_SIGMA     = 1.5      # portable price-move threshold; 1.0 caus
 ALERT_FUNDING_DELTA_1H_PCT  = 0.001    # 1h funding change, in percentage points; latest p95 was <=0.0027pp
 ALERT_IMPACT_EXCESS_BPS     = 4.0      # impact width minus natural spread (global default)
 ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {  # per-symbol overrides from the 2026-04-25 retained run
-    "bnb-usdc": 3.0,
     "btc-usdc": 2.0,
     "doge-usdc": 8.0,
-    "icp-usdc": 13.0,
 }
 ALERT_BOOK_IMBALANCE_PCT    = 50.0     # top-10 book side imbalance threshold; 25% was common noise
 

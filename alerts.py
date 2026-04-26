@@ -66,7 +66,7 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         _fire(now, sym, st, "FUNDING",
               _detail(
                   _funding_bias(funding_pct),
-                  "weak alone",
+                  "weak signal",
                   _funding_why(funding_pct),
                   f"funding {funding_pct:+.4f}% vs +/-{config.ALERT_FUNDING_PCT:.4f}% alert",
               ))
@@ -83,11 +83,11 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             short_liq = liq_vol - long_liq
             if long_liq >= short_liq:
                 move = "close SHORT / consider LONG"
-                why = "long liquidations are flushing into the book"
+                why = "long liquidations flushing into book"
                 dominant = f"long liq {_money(long_liq)}"
             else:
                 move = "close LONG / consider SHORT"
-                why = "short liquidations are squeezing into the book"
+                why = "short liquidations squeezing into book"
                 dominant = f"short liq {_money(short_liq)}"
             _fire(now, sym, st, "LIQ_VOL",
                   _detail(
@@ -103,13 +103,13 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             oi_move = "leverage opening"
             oi_strength = "context"
             oi_why = (
-                "new margin is entering; use funding/taker side to infer "
+                "new margin entering; check funding/taker side to infer"
                 "long vs short crowding"
             )
         else:
             oi_move = "deleveraging / take-profit clue"
             oi_strength = "context"
-            oi_why = "positions are closing, so squeeze fuel may be getting spent"
+            oi_why = "positions are closing, less pressure on squeeze"
         _fire(now, sym, st, "OI_1H",
               _detail(
                   oi_move,
@@ -144,7 +144,7 @@ def _check_simple(sym: str, st: SymbolState) -> None:
               _detail(
                   "cascade amplifier",
                   "weak alone",
-                  "thin impact book can magnify either forced exit",
+                  "thin impact book can increase liquidation (long / short)",
                   f"impact excess {impact:.1f}bp vs {impact_threshold:.1f}bp alert",
               ))
 
@@ -459,9 +459,9 @@ def _funding_bias(funding_pct: float) -> str:
 
 def _funding_why(funding_pct: float) -> str:
     if funding_pct > 0:
-        return "longs are paying, so long crowding may be building"
+        return "longs are paying, long crowding may be building"
     if funding_pct < 0:
-        return "shorts are paying, so short crowding may be building"
+        return "shorts are paying, short crowding may be building"
     return "funding is neutral"
 
 
