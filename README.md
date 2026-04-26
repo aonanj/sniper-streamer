@@ -31,7 +31,7 @@ columns need a little runtime history before they fill in.
 The watchlist lives in `config.py`:
 
 ```python
-WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
+WATCHLIST = ["btc-usdc", "eth-usdc", "xrp-usdc", "sol-usdc", "doge-usdc", "hype-usdc"]
 ```
 
 ## Data Persistence
@@ -107,8 +107,9 @@ liquidation columns are not shown in the main table.
 
 Simple alerts:
 
-- `FUNDING` - absolute funding exceeds `ALERT_FUNDING_PCT`
-- `OI_1H` - 1-hour OI change exceeds `ALERT_OI_DELTA_1H_PCT`
+- `FUNDING` - absolute funding reaches the hot-funding threshold
+- `OI_1H` - 1-hour OI change exceeds the percent threshold or the
+  volume-relative OI-notional threshold
 - `THIN_BOOK` - impact excess exceeds `ALERT_IMPACT_EXCESS_BPS` (or the
   per-symbol override in `ALERT_IMPACT_EXCESS_BPS_OVERRIDES`)
 - `FLOW_CLUSTER` - aggressive taker-flow cluster exceeds a stricter
@@ -126,15 +127,14 @@ Composite alerts:
   negative and OI/funding are building
 
 Display-level dollar thresholds scale against `dayNtlVlm`, with a floor from
-`ALERT_MIN_NOTIONAL_USD`, so BTC/ETH-scale settings do not make DOGE/ICP
+`ALERT_MIN_NOTIONAL_USD`, so BTC/ETH-scale settings do not make XRP/DOGE/HYPE
 effectively silent. Flow-cluster alerts use a separate, stricter alert floor,
 daily-volume fraction, trade count, dominance check, and 30-minute side-level
 dedupe so the Alerts panel does not repeat every visible cluster.
 
 `THIN_BOOK` uses a per-symbol threshold when an entry exists in
-`ALERT_IMPACT_EXCESS_BPS_OVERRIDES`; this keeps structurally high-impact
-markets like ICP from firing constantly while allowing tighter markets like BTC
-to alert on genuinely unusual thinness.
+`ALERT_IMPACT_EXCESS_BPS_OVERRIDES`; this keeps the threshold symbol-relative,
+so thinner XRP/DOGE events can surface without making BTC/ETH/SOL/HYPE noisy.
 
 ## Tuning
 
@@ -142,35 +142,36 @@ Important knobs in `config.py`:
 
 ```python
 
-WATCHLIST = ["btc-usdc", "eth-usdc", "icp-usdc", "sol-usdc", "doge-usdc", "bnb-usdc"]
+WATCHLIST = ["btc-usdc", "eth-usdc", "xrp-usdc", "sol-usdc", "doge-usdc", "hype-usdc"]
 
 # ── Simple threshold alerts ──────────────────────────────────────────────────
-ALERT_FUNDING_PCT     = 0.005       # |funding| > this (%) fires an alert; session range 0.001–0.007%/hr
+ALERT_FUNDING_PCT     = 0.00125     # |funding| >= this (%) fires; latest run repeatedly plateaued here
+ALERT_FUNDING_DEDUP_WINDOW_SEC = 3_600.0  # funding moves slowly; avoid 5-minute repeats
 ALERT_LIQ_VOL_5M_USD  = 2_000_000  # 5-minute liq notional > this ($)
-ALERT_OI_DELTA_1H_PCT = 0.75       # 1h OI % change > this fires an alert; latest run p95 was ~0.4–0.7%
+ALERT_OI_DELTA_1H_PCT = 0.75       # 1h OI % change > this fires; BTC-scale percentage gate
+ALERT_OI_DELTA_1H_DAY_FRACTION = 0.015  # also fire when 1h OI notional delta exceeds 1.5% of 24h volume
 ALERT_MIN_NOTIONAL_USD = 10_000     # floor for volume-scaled dollar thresholds
 
 # ── Composite setup alerts ───────────────────────────────────────────────────
 # Loaded long squeeze: funding hot, OI rising, buyers crowding, longs stacked below
 ALERT_TAKER_HIGH_PCT        = 60.0     # taker% above this = crowded buying tape
 ALERT_TAKER_LOW_PCT         = 30.0     # taker% below this = crowded selling / capitulation
-ALERT_FUNDING_SQUEEZE_PCT   = 0.001    # funding (%) threshold for squeeze composites; BNB/DOGE cap at 0.00125%
+ALERT_FUNDING_SQUEEZE_PCT   = 0.001    # funding (%) threshold for squeeze composites
 # Capitulation reversal: forced selling hammering the perp book
 ALERT_CVD_SHARP_NEG_USD     = -500_000 # CVD must be below this ($) for capitulation
 ALERT_CVD_SHARP_NEG_DAY_FRACTION = 0.0005  # CVD threshold scales to 24h volume
-ALERT_BASIS_CAPITULATION    = -0.20    # basis (%) must be below this; session min was SOL -0.289%, ETH -0.239%
+ALERT_BASIS_CAPITULATION    = -0.10    # basis (%) must be below this; latest run tail was BTC/ETH/SOL near -0.10%
 ALERT_LIQ_CAPITULATION_USD  = 500_000  # minimum 5m liq vol for capitulation context ($)
 ALERT_LIQ_VOL_5M_DAY_FRACTION = 0.001  # liquidation/proxy threshold scales to 24h volume
 # Grinding trap: price rising on positioning, not real demand
 ALERT_PRICE_GRIND_PCT       = 0.3      # price must rise this much in 15m (%)
-ALERT_PRICE_GRIND_SIGMA     = 1.5      # portable price-move threshold; 1.0 caused BNB/ICP noise
+ALERT_PRICE_GRIND_SIGMA     = 1.5      # portable price-move threshold; 1.0 was noisy in retained runs
 ALERT_FUNDING_DELTA_1H_PCT  = 0.001    # 1h funding change, in percentage points; latest p95 was <=0.0027pp
 ALERT_IMPACT_EXCESS_BPS     = 4.0      # impact width minus natural spread (global default)
-ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {  # per-symbol overrides from the 2026-04-25 retained run
-    "bnb-usdc": 3.0,
+ALERT_IMPACT_EXCESS_BPS_OVERRIDES = {  # per-symbol overrides from retained Hyperliquid exports
     "btc-usdc": 2.0,
-    "doge-usdc": 8.0,
-    "icp-usdc": 13.0,
+    "doge-usdc": 2.5,
+    "xrp-usdc": 2.0,
 }
 ALERT_BOOK_IMBALANCE_PCT    = 50.0     # top-10 book side imbalance threshold; 25% was common noise
 
@@ -194,7 +195,7 @@ BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT = 0.5  # fallback to oracle if spot basis 
 
 # Taker-flow cluster proxy used while public liquidation data is unavailable.
 TAKER_CLUSTER_MIN_USD = 500_000
-TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015  # raised from 0.001; SOL floor lifts from $184k→$276k
+TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015  # visible flow clusters scale to 24h volume
 TAKER_CLUSTER_MIN_COUNT = 3
 TAKER_CLUSTER_ALERT_FLOOR_USD = 25_000
 TAKER_CLUSTER_ALERT_MIN_USD = 5_000_000
@@ -234,7 +235,9 @@ The funding-related thresholds (`ALERT_FUNDING_PCT`, `ALERT_FUNDING_SQUEEZE_PCT`
 are compared to `st.funding * 100` in the alert engine, where `st.funding` is the
 raw per-hour rate fraction from the Hyperliquid API (e.g. `0.0000125` → `0.00125%/hr`).
 Keep this in mind when adjusting: `0.005` means "fire when funding exceeds
-0.005%/hr, or about 0.12%/day equivalent", not 0.5% per period.
+0.005%/hr, or about 0.12%/day equivalent", not 0.5% per period. The current
+simple funding alert is lower than that example and fires at `0.00125%/hr`
+because the latest retained Hyperliquid run repeatedly plateaued there.
 
 ## Limitations
 

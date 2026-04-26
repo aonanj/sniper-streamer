@@ -3,7 +3,7 @@ Threshold-based alert engine — simple signals and composite setup alerts.
 
 Most alerts are de-duplicated within a 5-minute window per (symbol, kind) pair
 so a sustained condition fires once rather than on every dashboard refresh.
-Flow-cluster alerts use a longer side-level dedupe window.
+Funding and flow-cluster alerts use longer dedupe windows.
 
 Composite setups
 ────────────────
@@ -69,7 +69,8 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                   "weak signal",
                   _funding_why(funding_pct),
                   f"funding {funding_pct:+.4f}% vs +/-{config.ALERT_FUNDING_PCT:.4f}% alert",
-              ))
+              ),
+              dedup_window=config.ALERT_FUNDING_DEDUP_WINDOW_SEC)
 
     if config.LIQUIDATION_FEED_ENABLED:
         recent_liqs = st.recent_liqs(300_000)
@@ -98,25 +99,31 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                   ))
 
     oi_d1h = st.oi_history.delta_pct(3_600_000)
-    if oi_d1h is not None and abs(oi_d1h) >= config.ALERT_OI_DELTA_1H_PCT:
+    oi_day_fraction = _oi_delta_day_fraction(st, 3_600_000)
+    if oi_d1h is not None and _oi_delta_alert_hit(oi_d1h, oi_day_fraction):
         if oi_d1h > 0:
             oi_move = "leverage opening"
             oi_strength = "context"
             oi_why = (
                 "new margin entering; check funding/taker side to infer"
-                "long vs short crowding"
+                " long vs short crowding"
             )
         else:
             oi_move = "deleveraging / take-profit clue"
             oi_strength = "context"
             oi_why = "positions are closing, less pressure on squeeze"
-        _fire(now, sym, st, "OI_1H",
-              _detail(
-                  oi_move,
-                  oi_strength,
-                  oi_why,
-                  f"OI 1h {oi_d1h:+.2f}% vs +/-{config.ALERT_OI_DELTA_1H_PCT:.2f}% alert",
-              ))
+        _fire(
+            now, sym, st, "OI_1H",
+            _detail(
+                oi_move,
+                oi_strength,
+                oi_why,
+                f"OI 1h {oi_d1h:+.2f}%; "
+                f"notional {_fmt_fraction_pct(oi_day_fraction)} of 24h volume vs "
+                f"+/-{config.ALERT_OI_DELTA_1H_PCT:.2f}% or "
+                f"+/-{config.ALERT_OI_DELTA_1H_DAY_FRACTION * 100:.2f}% volume alert",
+            ),
+        )
 
     if config.LIQUIDATION_FEED_ENABLED:
         clusters = st.liq_clusters()
@@ -204,7 +211,7 @@ def _check_long_squeeze(sym: str, st: SymbolState) -> None:
 
     if not (
         funding_pct >= config.ALERT_FUNDING_SQUEEZE_PCT
-        and oi_d1h is not None and oi_d1h >= config.ALERT_OI_DELTA_1H_PCT
+        and _oi_rising_alert_hit(st, oi_d1h)
         and tp5 is not None and tp5 >= config.ALERT_TAKER_HIGH_PCT
     ):
         return
@@ -226,6 +233,7 @@ def _check_long_squeeze(sym: str, st: SymbolState) -> None:
             "strong",
             "crowded longs are vulnerable to forced selling",
             f"funding {funding_pct:+.4f}%; OI 1h +{oi_d1h:.1f}%; "
+            f"OI notional {_fmt_oi_day_fraction(st)} of 24h volume; "
             f"taker buy {tp5:.0f}%; long-liq cluster {dist_pct:.2f}% below",
         ),
     )
@@ -290,7 +298,7 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
     if not (
         funding_pct >= config.ALERT_FUNDING_SQUEEZE_PCT
         and (funding_delta is None or funding_delta >= config.ALERT_FUNDING_DELTA_1H_PCT)
-        and oi_d1h is not None and oi_d1h >= config.ALERT_OI_DELTA_1H_PCT
+        and _oi_rising_alert_hit(st, oi_d1h)
         and tp5 is not None and tp5 >= config.ALERT_TAKER_HIGH_PCT
         and (thin_book or ask_heavy)
     ):
@@ -307,7 +315,8 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
             "strong",
             "crowded longs are building into a thin or ask-heavy book",
             f"funding {funding_pct:+.4f}%; funding 1h {_fmt_pp(funding_delta)}; "
-            f"OI 1h +{oi_d1h:.1f}%; taker buy {tp5:.0f}%; {book_note}",
+            f"OI 1h +{oi_d1h:.1f}% ({_fmt_oi_day_fraction(st)} of 24h volume); "
+            f"taker buy {tp5:.0f}%; {book_note}",
         ),
     )
 
@@ -328,7 +337,7 @@ def _check_structural_short_squeeze(sym: str, st: SymbolState) -> None:
 
     if not (
         funding_pct <= -config.ALERT_FUNDING_SQUEEZE_PCT
-        and oi_d1h is not None and oi_d1h >= config.ALERT_OI_DELTA_1H_PCT
+        and _oi_rising_alert_hit(st, oi_d1h)
         and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
         and st.basis_pct < 0
     ):
@@ -346,6 +355,7 @@ def _check_structural_short_squeeze(sym: str, st: SymbolState) -> None:
             "strong",
             "crowded shorts may cover into spot/bid support",
             f"funding {funding_pct:+.4f}%; OI 1h +{oi_d1h:.1f}%; "
+            f"OI notional {_fmt_oi_day_fraction(st)} of 24h volume; "
             f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%; {book_note}",
         ),
     )
@@ -434,6 +444,42 @@ def _impact_threshold(sym: str) -> float:
     )
 
 
+def _oi_delta_day_fraction(st: SymbolState, lookback_ms: int) -> float | None:
+    delta_oi = st.oi_history.delta_abs(lookback_ms)
+    ref_price = st.mark or st.mid
+    if delta_oi is None or not ref_price or st.day_ntl_vlm <= 0:
+        return None
+    return delta_oi * ref_price / st.day_ntl_vlm
+
+
+def _oi_delta_alert_hit(
+    oi_delta_pct: float | None,
+    oi_day_fraction: float | None,
+) -> bool:
+    return (
+        oi_delta_pct is not None
+        and abs(oi_delta_pct) >= config.ALERT_OI_DELTA_1H_PCT
+    ) or (
+        oi_day_fraction is not None
+        and abs(oi_day_fraction) >= config.ALERT_OI_DELTA_1H_DAY_FRACTION
+    )
+
+
+def _oi_rising_alert_hit(st: SymbolState, oi_delta_pct: float | None) -> bool:
+    oi_day_fraction = _oi_delta_day_fraction(st, 3_600_000)
+    return (
+        oi_delta_pct is not None
+        and oi_delta_pct > 0
+        and (
+            oi_delta_pct >= config.ALERT_OI_DELTA_1H_PCT
+            or (
+                oi_day_fraction is not None
+                and oi_day_fraction >= config.ALERT_OI_DELTA_1H_DAY_FRACTION
+            )
+        )
+    )
+
+
 def _volume_scaled_threshold(
     st: SymbolState,
     cap_usd: float,
@@ -467,6 +513,14 @@ def _funding_why(funding_pct: float) -> str:
 
 def _fmt_pp(value: float | None) -> str:
     return "n/a" if value is None else f"{value:+.4f}pp"
+
+
+def _fmt_fraction_pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:+.2f}%"
+
+
+def _fmt_oi_day_fraction(st: SymbolState) -> str:
+    return _fmt_fraction_pct(_oi_delta_day_fraction(st, 3_600_000))
 
 
 def _money(value: float) -> str:
@@ -515,7 +569,11 @@ def _fire(
 
 
 def _prune_dedup(ts: float) -> None:
-    retention = max(_DEDUP_WINDOW, config.TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC)
+    retention = max(
+        _DEDUP_WINDOW,
+        config.ALERT_FUNDING_DEDUP_WINDOW_SEC,
+        config.TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC,
+    )
     cutoff = ts - retention * 2
     stale = [key for key, fired_ts in _last_fired_by_key.items() if fired_ts < cutoff]
     for key in stale:

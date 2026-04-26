@@ -25,8 +25,8 @@ class OIHistory:
             return None
         return self._samples[-1][0]
 
-    def delta_pct(self, lookback_ms: int) -> float | None:
-        """Return OI % change over the given lookback window, or None if insufficient data.
+    def _reference_value(self, lookback_ms: int) -> tuple[float, float] | None:
+        """Return current and lookback OI values, or None if history is insufficient.
 
         Walks newest->oldest to find the most recent sample at or before the
         cutoff. Rejects the reference if it is more than one window-length
@@ -43,9 +43,27 @@ class OIHistory:
                     return None
                 past_oi = oi
                 break
-        if past_oi is None or past_oi == 0.0:
+        if past_oi is None:
+            return None
+        return current, past_oi
+
+    def delta_pct(self, lookback_ms: int) -> float | None:
+        """Return OI % change over the given lookback window."""
+        values = self._reference_value(lookback_ms)
+        if values is None:
+            return None
+        current, past_oi = values
+        if past_oi == 0.0:
             return None
         return (current - past_oi) / past_oi * 100
+
+    def delta_abs(self, lookback_ms: int) -> float | None:
+        """Return absolute OI-unit change over the given lookback window."""
+        values = self._reference_value(lookback_ms)
+        if values is None:
+            return None
+        current, past_oi = values
+        return current - past_oi
 
 
 @dataclass

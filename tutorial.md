@@ -128,7 +128,10 @@ Funding is the mechanism that keeps the perpetual contract price anchored to the
 - **Bold green** — funding is significantly negative (shorts are paying, shorts are crowded). This is the primary fuel for a short squeeze.
 - **White** — funding is near zero, positioning is balanced.
 
-The threshold for bold coloring is ±0.005% per hour (roughly ±0.12%/day, or about ±44%/year annualized). At that level, the cost of holding a leveraged position is high enough to accelerate the decision to close.
+The threshold for bold coloring is ±0.00125% per hour. In the latest retained
+Hyperliquid run, that was the repeated hot-funding plateau. At that level, the
+cost of holding a leveraged position is high enough to treat funding as crowding
+context, but it is still not a standalone trade signal.
 
 **Right — 1-hour funding delta** (how much the funding rate has changed in the past hour, in percentage points):
 
@@ -259,8 +262,8 @@ For margin sniping, a thinning spread combined with a shift from bid-heavy to as
 Hyperliquid's `impactPxs` width minus the natural top-of-book spread, in basis points. This is a thinness proxy: it measures how much a standardized meaningful order would slip *beyond* what the visible spread implies.
 
 - **Bold red** — ≥ the symbol's threshold. The tuned defaults are 4 bps
-  globally, with overrides for BTC (2 bps), BNB (3 bps), DOGE (8 bps), and ICP
-  (13 bps). The book is thin. A forced unwind would cause material slippage.
+  globally, with overrides for BTC (2 bps), DOGE (2.5 bps), and XRP (2 bps).
+  The book is thin. A forced unwind would cause material slippage.
 - **Yellow** — ≥ half the threshold. Elevated thinness, building toward alert territory.
 - **Dim** — normal depth.
 
@@ -330,9 +333,9 @@ Displays up to 10 recent alerts. Each line:
 ```
 
 Alerts are deduplicated: most symbol/kind pairs will not re-fire within a
-5-minute window. Flow-cluster alerts use a longer side-level dedupe window
-because the visible cluster panel can keep showing the same high-volume node for
-an hour.
+5-minute window. Funding and flow-cluster alerts use longer dedupe windows
+because slow funding plateaus and visible cluster nodes can persist for a long
+time.
 
 The details are grouped this way so the alert is useful under time pressure:
 
@@ -366,7 +369,10 @@ These fire when a single threshold is breached.
 
 **FUNDING** — yellow
 
-Fires when the absolute funding rate exceeds 0.005%/hr (≈ 0.12%/day). Either positive or negative. This is the lowest-bar alert — it signals that positioning has moved to a level where it is costing leveraged holders meaningfully. It is necessary but not sufficient for a squeeze setup.
+Fires when the absolute funding rate reaches 0.00125%/hr. Either positive or
+negative. This is the lowest-bar alert — it signals that positioning has moved
+to the current hot-funding plateau. It is necessary but not sufficient for a
+squeeze setup.
 
 The details state whether positive funding is a short watch / long-exit clue, or
 negative funding is a long watch / short-exit clue. It is marked `weak alone`
@@ -375,7 +381,12 @@ still opening or that the book is ready to move.
 
 **OI_1H** — magenta
 
-Fires when 1-hour open interest has changed by more than 0.75%. A rapid OI surge means new leveraged positions opened at scale in a short window. Combined with directional taker flow, this tells you who opened them. Combined with thin book, it tells you the unwind could be disorderly.
+Fires when 1-hour open interest has changed by more than 0.75%, or when the
+1-hour OI notional change exceeds 1.5% of the asset's 24-hour volume. The
+volume-relative path matters for XRP, SOL, and HYPE because a smaller percentage
+OI move can still be large versus normal turnover. Combined with directional
+taker flow, this tells you who opened positions. Combined with thin book, it
+tells you the unwind could be disorderly.
 
 The details distinguish `leverage opening` from `deleveraging / take-profit
 clue`. Rising OI adds fuel to a squeeze setup; falling OI suggests positions are
@@ -733,11 +744,10 @@ A setup with only one or two of these signals is noise. A setup where five or si
 
 **Wait for history to build.** OI deltas, funding velocity, realized vol, and BTC beta need runtime history before they are meaningful. The columns will show dim or missing values in the first few minutes after launch. Wait at least 15–30 minutes before relying on σ15m, CVD stacks, or β/ρ.
 
-**Impact thresholds are symbol-aware.** The 2026-04-25 retained run showed that
-BTC, BNB, DOGE, and ICP need different impact baselines. ICP remains overridden
-to 13 bps because its structural impact excess is high; BTC is overridden lower
-because a 2 bp impact excess is already unusual there. Treat a THIN_BOOK alert
-as a symbol-relative thinness event, not a raw cross-asset comparison.
+**Impact thresholds are symbol-aware.** Retained Hyperliquid exports showed that
+BTC, DOGE, and XRP need different impact baselines. BTC and XRP are overridden
+to 2 bps, while DOGE is overridden to 2.5 bps. Treat a THIN_BOOK alert as a
+symbol-relative thinness event, not a raw cross-asset comparison.
 
 **Stale drift is an early warning.** If the Drift C/T/B column shows a stale trade feed (T in red) while other feeds are current, do not act on CVD or taker% values — they are not reflecting the current tape. During a cascade, the trade feed should be the most active stream.
 
