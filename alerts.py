@@ -427,7 +427,7 @@ def _check_grinding_trap(sym: str, st: SymbolState) -> None:
         _detail(
             "close LONG / open SHORT",
             "moderate",
-            "price is rising without proportional buyer support",
+            "↑ price without buyer support",
             f"price 15m +{px_d15:.2f}% ({px_sigma or 0:.1f} sigma); "
             f"{_cvd_label(cvd5)}; funding {st.funding*100:+.4f}%; "
             f"funding 1h {_fmt_pp(funding_delta)}; OI 15m +{oi_d15:.2f}%",

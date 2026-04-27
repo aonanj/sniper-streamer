@@ -271,7 +271,7 @@ class TradeWindow:
             for bucket in buckets.values()
             if bucket["count"] >= min_count and bucket["notional"] >= min_notional
         ]
-        return sorted(clusters, key=lambda x: x["notional"], reverse=True)[:5]
+        return sorted(clusters, key=lambda x: x["notional"], reverse=True)
 
 
 @dataclass
@@ -707,7 +707,7 @@ class SymbolState:
             [v for v in buckets.values() if v["count"] >= min_count],
             key=lambda x: x["notional"],
             reverse=True,
-        )[:5]
+        )
 
 
 def _level_stats(levels: list[dict]) -> list[dict[str, float]]:

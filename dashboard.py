@@ -31,6 +31,10 @@ _COLUMN_MIN_WIDTHS = {
     "Book": 23,
     "Drift C/T/B": 15,
 }
+_ALERT_PANEL_MIN_ROWS = 12
+_MAIN_PANEL_EXTRA_ROWS = 4
+_MAIN_LAYOUT_RATIO = 1
+_BOTTOM_LAYOUT_RATIO = 2
 _SYMBOL_PALETTE = (
     "#ff5fd7",  # magenta
     "#4da3ff",  # blue
@@ -335,6 +339,17 @@ def _flow_cluster_window_label() -> str:
     return f"{window_ms / 1000:.0f}s"
 
 
+def _screener_min_rows() -> int:
+    return len(config.WATCHLIST) + _MAIN_PANEL_EXTRA_ROWS
+
+
+def _alert_display_limit() -> int:
+    height = console.size.height
+    ratio_total = _MAIN_LAYOUT_RATIO + _BOTTOM_LAYOUT_RATIO
+    estimated_bottom_rows = int(height * _BOTTOM_LAYOUT_RATIO / ratio_total)
+    return max(_ALERT_PANEL_MIN_ROWS, estimated_bottom_rows - 2)
+
+
 # ------------------------------------------------------------------ #
 # Panel builders
 
@@ -437,7 +452,7 @@ def _format_alert_detail(message: str) -> Text:
 
 
 def _build_alert_panel() -> Panel:
-    recent = alerts.recent(10)
+    recent = alerts.recent(_alert_display_limit())
     if not recent:
         body = Text("No alerts.", style="dim")
     else:
@@ -457,12 +472,12 @@ def _build_alert_panel() -> Panel:
 
 
 def _build_cluster_panel() -> Panel:
-    """Top-2 liq clusters or configured taker-flow clusters per symbol."""
+    """Relevant liq clusters or configured taker-flow clusters per symbol."""
     if not config.LIQUIDATION_FEED_ENABLED:
         lines = []
         for sym in config.WATCHLIST:
             st = state[sym]
-            for c in st.taker_flow_clusters()[:2]:
+            for c in st.taker_flow_clusters():
                 if not st.mark:
                     continue
                 dominant = "BUY" if c["buy"] >= c["sell"] else "SELL"
@@ -498,7 +513,7 @@ def _build_cluster_panel() -> Panel:
 
     lines = []
     for sym in config.WATCHLIST:
-        for c in state[sym].liq_clusters(window_ms=3_600_000, min_count=2)[:2]:
+        for c in state[sym].liq_clusters(window_ms=3_600_000, min_count=2):
             st        = state[sym]
             dominant  = "LONG" if c["longs"] >= c["shorts"] else "SHORT"
             above     = c["price"] > st.mark if st.mark else True
@@ -525,8 +540,17 @@ def _build_cluster_panel() -> Panel:
 def _build_layout() -> Layout:
     layout = Layout()
     layout.split_column(
-        Layout(_build_screener_table(), name="main",   ratio=3),
-        Layout(name="bottom",                          ratio=1),
+        Layout(
+            _build_screener_table(),
+            name="main",
+            ratio=_MAIN_LAYOUT_RATIO,
+            minimum_size=_screener_min_rows(),
+        ),
+        Layout(
+            name="bottom",
+            ratio=_BOTTOM_LAYOUT_RATIO,
+            minimum_size=_ALERT_PANEL_MIN_ROWS + 2,
+        ),
     )
     layout["bottom"].split_row(
         Layout(_build_alert_panel(),   name="alerts"),
