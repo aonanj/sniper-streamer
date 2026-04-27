@@ -301,8 +301,8 @@ def write_manifest(out_dir: Path, context: dict[str, Any]) -> dict[str, str]:
         "",
         "## Review Notes",
         "",
-        "- Hyperliquid public data has no Binance-style all-market forced-order stream, "
-        "so liquidation rows may be empty unless a separate source has been wired in.",
+        "- Liquidation rows come from the configured external liquidation source "
+        "(Bybit allLiquidation by default), mapped onto the Hyperliquid watchlist.",
         "- `basis_source` is `spot` when Hyperliquid spot is available and `oracle` "
         "when the dashboard falls back to oracle basis.",
         "- `impact_excess_bps`, `book_imbalance_pct`, taker-flow buckets, and "
@@ -776,7 +776,8 @@ def write_llm_prompt(out_dir: Path) -> dict[str, str]:
     path = out_dir / "11_llm_review_prompt.md"
     text = """# Review Prompt
 
-You are reviewing persisted data from a local Hyperliquid USDC perp screener.
+You are reviewing persisted data from a local Hyperliquid USDC perp screener
+that uses Bybit allLiquidation as its external liquidation-event source.
 Use the files in this export to recommend precise tuning changes to the current
 setup.
 

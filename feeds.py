@@ -7,14 +7,15 @@ WebSocket subscriptions consumed:
   trades          - executed trades for CVD/taker flow
   l2Book          - top-of-book depth, spread, imbalance, resting walls
   allMids         - cross-asset mids for beta/correlation and spot-basis refresh
+  Bybit allLiquidation - external unthrottled liquidation events by watched coin
 
 Info endpoint polled:
   metaAndAssetCtxs - current asset contexts across perpetual markets
   spotMetaAndAssetCtxs - spot markets used for true perp-vs-spot basis
 
 Hyperliquid's official public market subscriptions do not expose a Binance
-`!forceOrder@arr` equivalent, so liquidation-derived signals stay disabled
-unless a separate liquidation source is added.
+`!forceOrder@arr` equivalent, so liquidation-derived signals are fed by
+Bybit's public `allLiquidation` stream when enabled.
 """
 
 from __future__ import annotations
@@ -69,6 +70,30 @@ _SYMBOL_BY_COIN = {
     for sym in config.WATCHLIST
     if (coin := _coin_from_watch_symbol(sym))
 }
+_BYBIT_LIQ_SYMBOL_BY_WATCH_SYMBOL: dict[str, str] = {}
+_WATCH_SYMBOL_BY_BYBIT_LIQ_SYMBOL: dict[str, str] = {}
+
+
+def _build_bybit_liq_symbol_maps() -> None:
+    overrides = getattr(config, "BYBIT_LIQUIDATION_SYMBOL_OVERRIDES", {})
+    quote = str(getattr(config, "BYBIT_LIQUIDATION_QUOTE", "USDT")).upper()
+
+    _BYBIT_LIQ_SYMBOL_BY_WATCH_SYMBOL.clear()
+    _WATCH_SYMBOL_BY_BYBIT_LIQ_SYMBOL.clear()
+    for sym in config.WATCHLIST:
+        raw_override = overrides.get(sym) if isinstance(overrides, dict) else None
+        if raw_override is not None:
+            if not raw_override:
+                continue
+            bybit_symbol = str(raw_override).upper()
+        else:
+            bybit_symbol = f"{_coin_from_watch_symbol(sym)}{quote}"
+
+        _BYBIT_LIQ_SYMBOL_BY_WATCH_SYMBOL[sym] = bybit_symbol
+        _WATCH_SYMBOL_BY_BYBIT_LIQ_SYMBOL[bybit_symbol] = sym
+
+
+_build_bybit_liq_symbol_maps()
 
 
 def _symbol_for_coin(coin: str | None) -> str | None:
@@ -88,6 +113,13 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _asset_ctx_payload() -> dict[str, str]:
@@ -256,6 +288,56 @@ def _handle_all_mids(data: dict[str, Any]) -> None:
             state[spot_sym].record_hl_spot(str(coin), mid)
 
 
+def _handle_bybit_liquidation(msg: dict[str, Any]) -> None:
+    topic = str(msg.get("topic") or "")
+    if not topic.startswith("allLiquidation."):
+        return
+
+    data = msg.get("data")
+    rows = data if isinstance(data, list) else [data]
+    msg_ts_ms = _to_int(msg.get("ts"), int(time.time() * 1000))
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        bybit_symbol = str(row.get("s") or topic.rsplit(".", 1)[-1]).upper()
+        sym = _WATCH_SYMBOL_BY_BYBIT_LIQ_SYMBOL.get(bybit_symbol)
+        if sym is None:
+            continue
+
+        position_side = str(row.get("S") or "").lower()
+        if position_side == "buy":
+            # Bybit reports the liquidated position side. A liquidated long is
+            # forced selling into the book, which is the app's SELL convention.
+            side = "SELL"
+        elif position_side == "sell":
+            side = "BUY"
+        else:
+            continue
+
+        ts_ms = _to_int(row.get("T"), msg_ts_ms)
+        qty = _to_float(row.get("v"))
+        price = _to_float(row.get("p"))
+        if qty <= 0 or price <= 0:
+            continue
+
+        state[sym].add_liq(ts_ms=ts_ms, side=side, qty=qty, price=price)
+        persistence.enqueue_liquidation(
+            ts_ms=ts_ms,
+            sym=sym,
+            side=side,
+            qty=qty,
+            price=price,
+            raw={
+                "source": config.LIQUIDATION_FEED_SOURCE,
+                "topic": topic,
+                "event": row,
+                "message_ts": msg.get("ts"),
+            },
+        )
+
+
 def _handle(msg: dict[str, Any]) -> None:
     channel = msg.get("channel")
     data = msg.get("data")
@@ -316,6 +398,90 @@ async def _run_subscription_ws(
             backoff = min(backoff * 2, 60.0)
 
 
+def _bybit_liquidation_topics() -> list[str]:
+    return [
+        f"allLiquidation.{bybit_symbol}"
+        for bybit_symbol in _BYBIT_LIQ_SYMBOL_BY_WATCH_SYMBOL.values()
+    ]
+
+
+async def _send_bybit_ping(ws: Any) -> None:
+    interval = float(getattr(config, "BYBIT_LIQUIDATION_PING_INTERVAL_SEC", 20.0))
+    while True:
+        await asyncio.sleep(interval)
+        await ws.send(json.dumps({"op": "ping"}))
+
+
+def _handle_bybit_control_message(msg: dict[str, Any]) -> bool:
+    op = msg.get("op")
+    if op in {"ping", "pong"} or msg.get("ret_msg") == "pong":
+        return True
+
+    if op == "subscribe":
+        data = msg.get("data")
+        fail_topics = []
+        if isinstance(data, dict):
+            fail_topics = data.get("failTopics") or []
+        if msg.get("success") is False or fail_topics:
+            detail = ", ".join(str(topic) for topic in fail_topics) or str(msg)
+            print(f"[WS bybit-liq] subscription issue: {detail}")
+        return True
+
+    return False
+
+
+async def _run_bybit_liquidation_ws() -> None:
+    topics = _bybit_liquidation_topics()
+    if not topics:
+        print("[WS bybit-liq] no Bybit liquidation topics configured")
+        return
+
+    backoff = 1.0
+    while True:
+        ping_task: asyncio.Task | None = None
+        try:
+            async with websockets.connect(
+                config.BYBIT_LIQUIDATION_WS_URL,
+                ping_interval=20,
+                ping_timeout=20,
+            ) as ws:
+                await ws.send(json.dumps({"op": "subscribe", "args": topics}))
+                ping_task = asyncio.create_task(_send_bybit_ping(ws))
+
+                backoff = 1.0
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                        if (
+                            isinstance(msg, dict)
+                            and not _handle_bybit_control_message(msg)
+                        ):
+                            _handle_bybit_liquidation(msg)
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosed:
+            pass
+        except Exception as e:
+            print(
+                f"[WS bybit-liq] {type(e).__name__}: {e}  "
+                f"retrying in {backoff:.0f}s"
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+        finally:
+            if ping_task is not None:
+                if not ping_task.done():
+                    ping_task.cancel()
+                try:
+                    await ping_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+
 async def run_ws() -> None:
     market_subs = [
         {"type": "activeAssetCtx", "coin": coin}
@@ -331,12 +497,16 @@ async def run_ws() -> None:
     ]
     all_mids_subs = [{"type": "allMids"}]
 
-    await asyncio.gather(
+    tasks = [
         _run_subscription_ws(market_subs, "market-core"),
         _run_subscription_ws(trade_subs, "trades"),
         _run_subscription_ws(book_subs, "l2-book"),
         _run_subscription_ws(all_mids_subs, "all-mids"),
-    )
+    ]
+    if config.LIQUIDATION_FEED_ENABLED:
+        tasks.append(_run_bybit_liquidation_ws())
+
+    await asyncio.gather(*tasks)
 
 
 # ------------------------------------------------------------------ #

@@ -32,13 +32,12 @@ _COLUMN_MIN_WIDTHS = {
     "Drift C/T/B": 15,
 }
 _SYMBOL_PALETTE = (
-    "#4da3ff",  # blue
     "#ff5fd7",  # magenta
-    "#00d7ff",  # cyan
-    "#af87ff",  # violet
-    "#ffaf5f",  # orange
-    "#d787ff",  # purple
-    "#87afff",  # periwinkle
+    "#4da3ff",  # blue
+    "#ff8000",  # orange
+    "#80ff00",  # chartreuse
+    "#f8ceb1",  # orange
+    "#c0c0c0",  # silver
     "#ff87d7",  # pink
 )
 _SYMBOL_COLORS = {
@@ -148,7 +147,7 @@ def _fmt_funding_stack(st: SymbolState) -> Text:
 def _fmt_basis(st: SymbolState) -> Text:
     text = _signed(st.basis_pct, 3, "")
     if st.basis_source == "oracle":
-        text.append(" o", style=_emphasis("bright_white"))
+        text.append(" o", style=_emphasis("dim"))
     return text
 
 
@@ -226,7 +225,7 @@ def _fmt_impact(st: SymbolState, sym: str = "") -> Text:
 def _fmt_flow_cluster(st: SymbolState) -> Text:
     if not st.mark:
         return Text("-", style="dim")
-    clusters = st.taker_flow_clusters(window_ms=3_600_000)
+    clusters = st.taker_flow_clusters()
     if not clusters:
         return Text("-", style="dim")
     top = clusters[0]
@@ -323,6 +322,17 @@ def _fmt_liq_vol(usd: float) -> Text:
     if usd >= config.ALERT_LIQ_VOL_5M_USD:
         return Text(f"${usd:,.0f}", style=_emphasis("red"))
     return Text(f"${usd:,.0f}", style="white")
+
+
+def _flow_cluster_window_label() -> str:
+    window_ms = config.TAKER_CLUSTER_WINDOW_MS
+    if window_ms <= 0:
+        return "session"
+    if window_ms % 3_600_000 == 0:
+        return f"{window_ms // 3_600_000}h"
+    if window_ms % 60_000 == 0:
+        return f"{window_ms // 60_000}m"
+    return f"{window_ms / 1000:.0f}s"
 
 
 # ------------------------------------------------------------------ #
@@ -447,12 +457,12 @@ def _build_alert_panel() -> Panel:
 
 
 def _build_cluster_panel() -> Panel:
-    """Top-2 liq clusters or taker-flow clusters per symbol over the past hour."""
+    """Top-2 liq clusters or configured taker-flow clusters per symbol."""
     if not config.LIQUIDATION_FEED_ENABLED:
         lines = []
         for sym in config.WATCHLIST:
             st = state[sym]
-            for c in st.taker_flow_clusters(window_ms=3_600_000)[:2]:
+            for c in st.taker_flow_clusters()[:2]:
                 if not st.mark:
                     continue
                 dominant = "BUY" if c["buy"] >= c["sell"] else "SELL"
@@ -467,7 +477,11 @@ def _build_cluster_panel() -> Panel:
                     (f"{dist_pct:.2f}% away  ", "dim"),
                     (f"x{c['count']} ", "white"),
                     (_fmt_usd_short(c["notional"]), "white"),
-                    (f"  bucket {st.flow_cluster_bucket_pct():.2f}%", "dim"),
+                    (
+                        f"  bucket {st.flow_cluster_bucket_pct():.2f}% "
+                        f"{c.get('ref_source', 'ref')}",
+                        "dim",
+                    ),
                 ))
         if not lines:
             lines = [
@@ -478,7 +492,7 @@ def _build_cluster_panel() -> Panel:
             ]
         return Panel(
             Text("\n").join(lines),
-            title="[bold underline cyan]Flow Clusters (1h)[/]",
+            title=f"[bold underline cyan]Flow Clusters ({_flow_cluster_window_label()})[/]",
             border_style="cyan",
         )
 

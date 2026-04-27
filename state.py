@@ -172,8 +172,12 @@ class TradeWindow:
     Tuple layout: (ts_ms, buy_notional, sell_notional, price, qty)
     """
 
-    window_ms: int
-    _trades: deque = field(default_factory=lambda: deque(maxlen=120_000))
+    window_ms: int | None
+    max_trades: int = 120_000
+    _trades: deque = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._trades = deque(maxlen=self.max_trades)
 
     def add(self, ts_ms: int, is_buyer_maker: bool, qty: float, price: float) -> None:
         notional = qty * price
@@ -185,6 +189,8 @@ class TradeWindow:
             self._trades.append((ts_ms, notional, 0.0, price, qty))
 
     def _recent(self) -> Iterable[tuple[int, float, float, float, float]]:
+        if self.window_ms is None:
+            return iter(self._trades)
         cutoff = int(time.time() * 1000) - self.window_ms
         return (trade for trade in self._trades if trade[0] >= cutoff)
 
@@ -210,6 +216,15 @@ class TradeWindow:
         buy, sell = self._window_totals()
         return buy + sell
 
+    def vwap(self) -> float | None:
+        qty_total = weighted_price = 0.0
+        for _, _, _, price, qty in self._recent():
+            if price <= 0 or qty <= 0:
+                continue
+            qty_total += qty
+            weighted_price += price * qty
+        return weighted_price / qty_total if qty_total > 0 else None
+
     def average_trade_notional(self) -> float | None:
         trades = list(self._recent())
         if not trades:
@@ -218,25 +233,28 @@ class TradeWindow:
 
     def clusters(
         self,
-        mark: float,
+        reference_price: float,
         bucket_pct: float,
+        reference_source: str = "vwap",
         min_notional: float = 0.0,
         min_count: int = 2,
     ) -> list[dict]:
         """Aggregate aggressive taker flow into price buckets."""
-        if not mark or bucket_pct <= 0:
+        if not reference_price or bucket_pct <= 0:
             return []
 
-        bucket_size = mark * bucket_pct / 100
+        bucket_size = reference_price * bucket_pct / 100
         if bucket_size <= 0:
             return []
 
         buckets: dict[int, dict] = {}
         for _, buy, sell, price, _ in self._recent():
-            key = round(price / bucket_size)
+            key = round((price - reference_price) / bucket_size)
             if key not in buckets:
                 buckets[key] = {
-                    "price": round(key * bucket_size, 6),
+                    "price": round(reference_price + key * bucket_size, 6),
+                    "ref_price": round(reference_price, 6),
+                    "ref_source": reference_source,
                     "count": 0,
                     "buy": 0.0,
                     "sell": 0.0,
@@ -301,6 +319,17 @@ class SymbolState:
     trades_5m: TradeWindow = field(default_factory=lambda: TradeWindow(300_000))
     trades_15m: TradeWindow = field(default_factory=lambda: TradeWindow(900_000))
     trades_1h: TradeWindow = field(default_factory=lambda: TradeWindow(3_600_000))
+    trades_session: TradeWindow = field(
+        default_factory=lambda: TradeWindow(
+            None,
+            config.TAKER_CLUSTER_SESSION_MAX_TRADES,
+        )
+    )
+
+    # First usable live price seen after process start; used as a stable fallback
+    # if a VWAP reference cannot be computed yet.
+    session_open_price: float = 0.0
+    session_open_ts: int = 0
 
     # Rolling histories for portable thresholds and cross-asset stats
     price_history: NumericHistory = field(
@@ -323,10 +352,12 @@ class SymbolState:
     def add_trade(
         self, ts_ms: int, is_buyer_maker: bool, qty: float, price: float
     ) -> None:
+        self._record_session_open(ts_ms, price)
         self.trades_1m.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_5m.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_15m.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_1h.add(ts_ms, is_buyer_maker, qty, price)
+        self.trades_session.add(ts_ms, is_buyer_maker, qty, price)
         self._touch_trade(ts_ms)
 
     def add_liq(self, ts_ms: int, side: str, qty: float, price: float) -> None:
@@ -353,6 +384,7 @@ class SymbolState:
 
     def record_mark(self, ts_ms: int) -> None:
         if self.mark:
+            self._record_session_open(ts_ms, self.mark)
             self.price_history.record(
                 ts_ms, self.mark, config.PRICE_HISTORY_MIN_INTERVAL_MS
             )
@@ -361,6 +393,7 @@ class SymbolState:
     def record_mid(self, ts_ms: int, mid: float) -> None:
         if mid <= 0:
             return
+        self._record_session_open(ts_ms, mid)
         self.mid = mid
         self.price_history.record(
             ts_ms, mid, config.PRICE_HISTORY_MIN_INTERVAL_MS
@@ -425,6 +458,12 @@ class SymbolState:
     def _touch_all_mids(self, ts_ms: int) -> None:
         self.last_all_mids_ts = max(self.last_all_mids_ts, ts_ms)
         self.last_event_ts = max(self.last_event_ts, ts_ms)
+
+    def _record_session_open(self, ts_ms: int, price: float) -> None:
+        if self.session_open_price or price <= 0 or not math.isfinite(price):
+            return
+        self.session_open_price = price
+        self.session_open_ts = ts_ms
 
     # ------------------------------------------------------------------ #
     # Derived properties
@@ -584,11 +623,13 @@ class SymbolState:
 
     def taker_flow_clusters(
         self,
-        window_ms: int = 3_600_000,
+        window_ms: int | None = None,
         min_notional: float | None = None,
         min_count: int | None = None,
     ) -> list[dict]:
         bucket_pct = self.flow_cluster_bucket_pct()
+        if window_ms is None:
+            window_ms = config.TAKER_CLUSTER_WINDOW_MS
         if min_notional is None:
             min_notional = self.volume_scaled_threshold(
                 config.TAKER_CLUSTER_MIN_USD,
@@ -596,7 +637,9 @@ class SymbolState:
             )
         if min_count is None:
             min_count = config.TAKER_CLUSTER_MIN_COUNT
-        if window_ms <= 60_000:
+        if window_ms <= 0:
+            trade_window = self.trades_session
+        elif window_ms <= 60_000:
             trade_window = self.trades_1m
         elif window_ms <= 300_000:
             trade_window = self.trades_5m
@@ -604,12 +647,23 @@ class SymbolState:
             trade_window = self.trades_15m
         else:
             trade_window = self.trades_1h
+        ref_price, ref_source = self.flow_cluster_reference(trade_window)
         return trade_window.clusters(
-            mark=self.mark or self.mid,
+            reference_price=ref_price,
+            reference_source=ref_source,
             bucket_pct=bucket_pct,
             min_notional=min_notional,
             min_count=min_count,
         )
+
+    def flow_cluster_reference(self, trade_window: TradeWindow) -> tuple[float, str]:
+        vwap = trade_window.vwap()
+        if vwap:
+            return vwap, "vwap"
+        if self.session_open_price:
+            return self.session_open_price, "session_open"
+        ref = self.mid or self.mark or self.book_mid
+        return (ref, "current") if ref else (0.0, "none")
 
     def recent_liqs(self, window_ms: int = 300_000) -> list[tuple]:
         cutoff = int(time.time() * 1000) - window_ms

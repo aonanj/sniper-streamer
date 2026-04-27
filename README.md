@@ -6,10 +6,9 @@ orders or generate instructions to trade. It helps you see where leverage,
 flow, book thinness, basis, and funding stress are lining up.
 
 Hyperliquid does not expose an official public all-market liquidation stream
-like Binance `!forceOrder@arr`. This dashboard therefore treats liquidation
-data as optional and, by default, uses data that Hyperliquid actually exposes:
-asset contexts, trades, `l2Book`, `allMids`, and spot market contexts where
-available.
+like Binance `!forceOrder@arr`. This dashboard therefore keeps Hyperliquid as
+the market-context venue, but consumes liquidation events from Bybit's public
+`allLiquidation` stream by default.
 
 ## Running It
 
@@ -47,7 +46,7 @@ I/O, schema setup, batching, and retention.
 Persisted tables:
 
 - `trades` - every valid watched taker trade, used for later CVD/backtesting
-- `liquidations` - every liquidation observed in the trade payload
+- `liquidations` - every Bybit `allLiquidation` event mapped to the watchlist
 - `market_snapshots` - downsampled state snapshots, at most once every 5s per
   symbol unless funding changes by at least `0.0001` percentage points
 - `alerts` - deduped alerts plus a `snapshot_json` column containing the state
@@ -79,6 +78,8 @@ WebSocket subscriptions:
 - `trades` - aggressive taker flow for CVD, taker%, average trade size, clusters
 - `l2Book` - spread, top-10 depth imbalance, large resting orders
 - `allMids` - watchlist mids for realized vol, BTC beta/correlation, spot refresh
+- Bybit `allLiquidation.{symbol}` - unthrottled public liquidation events for
+  watched coins, mapped from local `*-usdc` symbols to Bybit exchange symbols
 
 Info endpoint polling:
 
@@ -96,20 +97,21 @@ The terminal has three panels:
 
 - Main screener table - one row per watchlist symbol
 - Alerts - recent threshold/composite alerts
-- Flow Clusters (1h) - volume-by-price buckets from aggressive taker flow
+- Liq Clusters (1h) - liquidation volume-by-price buckets from Bybit
 
-If you later wire in a separate liquidation source and set
-`LIQUIDATION_FEED_ENABLED = True`, the bottom-right panel can still show
-liquidation clusters. With the default Hyperliquid-only setup, dormant
-liquidation columns are not shown in the main table.
+If `LIQUIDATION_FEED_ENABLED` is turned off, the bottom-right panel falls back
+to Flow Clusters (session), a VWAP-anchored view of aggressive taker flow
+retained in the current run.
 
 ## Alerts
 
 Simple alerts:
 
 - `FUNDING` - absolute funding reaches the hot-funding threshold
+- `LIQ_VOL` - 5-minute liquidation notional exceeds the volume-scaled threshold
 - `OI_1H` - 1-hour OI change exceeds the percent threshold or the
   volume-relative OI-notional threshold
+- `CLUSTER` - multiple liquidations stack in the same price bucket
 - `THIN_BOOK` - impact excess exceeds `ALERT_IMPACT_EXCESS_BPS` (or the
   per-symbol override in `ALERT_IMPACT_EXCESS_BPS_OVERRIDES`)
 - `FLOW_CLUSTER` - aggressive taker-flow cluster exceeds a stricter
@@ -118,11 +120,12 @@ Simple alerts:
 Composite alerts:
 
 - `LONG_SQUEEZE` - positive funding at or above `ALERT_FUNDING_SQUEEZE_PCT`,
-  OI rising, crowded buying tape, and a thin or ask-heavy book
+  OI rising, crowded buying tape, and nearby long-liquidation clusters when the
+  liquidation feed is enabled
 - `SHORT_SQUEEZE` - negative funding at or below `-ALERT_FUNDING_SQUEEZE_PCT`,
   OI rising, sell-dominated tape, and the perp trading below spot; fires when
   shorts are crowded and the setup is fragile for a violent short-covering rally
-- `CAPITULATION` - sell CVD, low taker%, negative basis, and thin impact book
+- `CAPITULATION` - liquidation volume, sell CVD, low taker%, and negative basis
 - `GRINDING_TRAP` - price is rising in realized-vol units while CVD is flat or
   negative and OI/funding are building
 
@@ -190,10 +193,18 @@ FUNDING_HISTORY_MIN_INTERVAL_MS = 60_000
 # Liquidation cluster detection
 LIQ_CLUSTER_BUCKET_PCT = 0.1  # price bucket width as % of mark
 LIQ_CLUSTER_MIN_COUNT  = 3    # minimum events in a bucket to flag as cluster
-LIQUIDATION_FEED_ENABLED = False  # Hyperliquid has no official public all-market liq stream
+LIQUIDATION_FEED_ENABLED = True  # consume Bybit allLiquidation for unthrottled liq events
+LIQUIDATION_FEED_SOURCE = "bybit_all_liquidation"
 BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT = 0.5  # fallback to oracle if spot basis disagrees with HL premium
 
-# Taker-flow cluster proxy used while public liquidation data is unavailable.
+# Bybit's allLiquidation feed is per exchange symbol. The local watchlist stays
+# Hyperliquid-oriented (e.g. "btc-usdc"), so these map watched coins to Bybit.
+BYBIT_LIQUIDATION_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+BYBIT_LIQUIDATION_QUOTE = "USDT"
+BYBIT_LIQUIDATION_SYMBOL_OVERRIDES = {}
+BYBIT_LIQUIDATION_PING_INTERVAL_SEC = 20.0
+
+# Taker-flow cluster fallback used when the liquidation feed is disabled.
 TAKER_CLUSTER_MIN_USD = 500_000
 TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015  # visible flow clusters scale to 24h volume
 TAKER_CLUSTER_MIN_COUNT = 3
@@ -203,6 +214,8 @@ TAKER_CLUSTER_ALERT_MIN_DAY_FRACTION = 0.01
 TAKER_CLUSTER_ALERT_MIN_COUNT = 10
 TAKER_CLUSTER_ALERT_DOMINANCE_PCT = 70.0
 TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC = 1_800.0
+TAKER_CLUSTER_WINDOW_MS = 0  # 0 = whole in-memory session
+TAKER_CLUSTER_SESSION_MAX_TRADES = 120_000
 TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
 TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6
 TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
@@ -241,7 +254,9 @@ because the latest retained Hyperliquid run repeatedly plateaued there.
 
 ## Limitations
 
-- Public Hyperliquid data still does not reveal full liquidation geography.
+- Liquidations are Bybit events mapped to the Hyperliquid watchlist by coin, so
+  they are cross-venue liquidation pressure, not native Hyperliquid liquidation
+  geography.
 - Spot basis only exists for watchlist assets with a Hyperliquid USDC spot book.
 - `impactPxs` is standardized by Hyperliquid; it is a thinness proxy, not your
   exact execution model.

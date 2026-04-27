@@ -74,7 +74,7 @@ The terminal is divided into three panels:
 
 - **Main screener table** — one row per watchlist symbol, updated continuously
 - **Alerts** (bottom-left) — recent threshold and composite alerts with timestamps
-- **Flow Clusters (1h)** (bottom-right) — where aggressive taker volume has been concentrating over the past hour
+- **Liq Clusters (1h)** (bottom-right) — where Bybit liquidation events are stacking by price
 
 Each panel is described in detail below.
 
@@ -103,7 +103,7 @@ Because mark — not the trade tape — is what triggers liquidations, a diverge
 
 **How to detect a divergence on the dashboard**:
 
-- **Flow Clusters panel** — the `##.##% away` distance field on each cluster line is the most direct indicator. A dominant flow cluster sitting 0.8%+ from mark in the direction of the flow means actual trading has moved materially beyond where mark is priced.
+- **Liq Clusters panel** — the `##.##% away` distance field on each cluster line shows where forced closes are occurring relative to Hyperliquid mark. A large cluster far from mark means the cross-venue liquidation tape has already moved materially beyond where mark is priced.
 - **CVD vs. Mark $** — if CVD 1m/5m is strongly red (aggressive buying) but Mark $ has barely moved, mark is lagging the real upside move in the tape.
 - **Drift C/T/B** — if Context drift (C) is stale while Trade drift (T) is fresh, mark has not yet updated to reflect recent activity. The gap between C and T age is a rough proxy for how out-of-sync mark currently is.
 
@@ -271,7 +271,7 @@ High impact excess is critical for sizing the risk in a sniping trade. If impact
 
 ### Flow Clus
 
-The single largest 1-hour aggressive taker-flow price bucket, summarized in one field:
+The single largest session aggressive taker-flow price bucket, summarized in one field:
 
 ```
 0.42% ↑B $1.20M
@@ -288,7 +288,7 @@ The single largest 1-hour aggressive taker-flow price bucket, summarized in one 
 - **Green** — sell cluster below mark (`↓S`). Aggressive sellers concentrated below current price. Can act as support or a reversal zone.
 - **Dim** — other combinations (buy cluster below mark, or sell cluster above mark) — directionally mixed.
 
-Flow clusters are not stop-loss clusters. They show where actual aggressive trading happened, which can create magnet effects (price retesting a high-volume node) or reversal zones (exhaustion near a prior high-volume sell cluster).
+Flow clusters are not stop-loss clusters. They show where actual aggressive trading happened, which can create magnet effects (price retesting a high-volume node) or reversal zones (exhaustion near a prior high-volume sell cluster). Live buckets are anchored to the session VWAP, falling back to the session-open price before enough trade data exists, so an older high-volume zone does not disappear just because the current mark drifts.
 
 ### β/ρ BTC
 
@@ -478,12 +478,14 @@ to stop chasing a long and watch for rollover confirmation.
 
 ---
 
-## Flow Clusters Panel (Bottom-Right) — "Flow Clusters (1h)"
+## Liquidation Clusters Panel (Bottom-Right) — "Liq Clusters (1h)"
 
-This panel shows the top two taker-flow clusters per symbol from the past hour. Each line:
+This panel shows the top two liquidation clusters per symbol over the past hour.
+Liquidation events come from Bybit `allLiquidation` and are mapped to the
+Hyperliquid watchlist by coin. Each line:
 
 ```
-SYMBOL  ↑/↓  B/S  @ price   ##.##% away   x#  $####   bucket 0.#%
+SYMBOL  ↑/↓  L/S  @ price   ##.##% away   x#  $####
 ```
 
 **Symbol** — bold white label for the asset
@@ -492,32 +494,34 @@ SYMBOL  ↑/↓  B/S  @ price   ##.##% away   x#  $####   bucket 0.#%
 - `↑` — the cluster is *above* the current mark price
 - `↓` — the cluster is *below* the current mark price
 
-**B or S**:
-- `B` (Buy) — buy notional exceeded sell notional in this price bucket
-- `S` (Sell) — sell notional exceeded buy notional in this price bucket
+**L or S**:
+- `L` (Long liquidations) — liquidated longs dominate this price bucket; this is forced selling
+- `S` (Short liquidations) — liquidated shorts dominate this price bucket; this is forced buying
 
 **Combined color of the arrow + letter**:
-- **Red** (`↑B`) — a buy-dominated cluster sits *above* current price. Aggressive buyers have been accumulating at a level the market has not yet sustained. This can act as a resistance test zone or, if broken, a retest magnet.
-- **Green** (`↓S`) — a sell-dominated cluster sits *below* current price. Aggressive sellers have been active at a lower level. This can act as support (if the sellers were stop-hunters and are now done) or as a re-entry zone for fresh shorts.
-- **Yellow/dim** — other combinations (buy cluster below, or sell cluster above) — directionally ambiguous, less immediately actionable.
+- **Red** (`↓L`) — long liquidations dominate; forced sellers are hitting the book.
+- **Green** (`↑S`) — short liquidations dominate; forced buyers are lifting the book.
 
 **`##.##% away`** — how far the cluster price is from the current mark, as a percentage. Shown in dim style. This tells you how much price would need to move to reach that zone of prior aggressive activity.
 
-**`x#`** — the number of individual aggressive trades that were aggregated into this bucket. More trades means more participants touched this level. A cluster with x50 trades is more meaningful than one with x4.
+**`x#`** — the number of liquidation events aggregated into this bucket. More events means the level has been hit repeatedly. A cluster with x20 events is more meaningful than one with x2.
 
-**`$####`** — the total notional (in USD, using short format: k, M, B) in this price bucket. The size of the cluster reflects how much conviction was placed at this level.
+**`$####`** — the total notional (in USD, using short format: k, M, B) in this price bucket. The size of the cluster reflects how much forced closing happened there.
 
-**`bucket 0.#%`** — the width of the price bucket used to aggregate trades, shown in dim style. Bucket width is dynamically calculated as 0.25× the 15-minute realized volatility, clamped between 0.1% and 0.6%. Higher-volatility assets have wider buckets; lower-volatility assets have narrower buckets. This normalization means a cluster on BTC (low vol) represents a tighter price zone than a cluster on a high-vol alt.
+Liquidation bucket width is controlled by `LIQ_CLUSTER_BUCKET_PCT`.
 
-**How to use flow clusters**:
+**How to use liquidation clusters**:
 
-Clusters are not stop-loss maps. They show where real trading happened — which means they can function as:
+Clusters are not Hyperliquid-native liquidation maps. They show where Bybit
+forced closes happened, which is still useful cross-venue pressure:
 
-- **Magnet levels** — price often retests zones of prior high-volume activity
-- **Exhaustion markers** — a large sell cluster that formed during a downswing may represent where most of the selling was done; once price returns to that level, sellers may be exhausted
-- **Conviction zones** — when a cluster forms at a level that price has been unable to break through, that level has shown resistance or support in realized flow terms, not just technically
+- **Cascade confirmation** — repeated long liquidations below mark confirm downside forced selling.
+- **Exhaustion markers** — large long-liquidation clusters after a selloff can mark where weak longs have already been flushed.
+- **Squeeze confirmation** — repeated short liquidations above mark confirm upside forced buying.
 
-In a squeeze context, a large buy cluster forming just above current price while funding is already elevated tells you longs are piling in above current mark — which is potential resistance and also means those positions are thin on margin before they become profitable. A sharp reversal would put all of them underwater quickly.
+If `LIQUIDATION_FEED_ENABLED` is turned off, this panel falls back to "Flow
+Clusters (session)", a VWAP-anchored view of aggressive taker-flow buckets from
+the current run.
 
 ---
 
@@ -571,16 +575,20 @@ All of these are consistent and reinforcing. This is a high-quality setup.
 
 ---
 
-**Step 3: Check the Flow Clusters panel for structure**
+**Step 3: Check the Liq Clusters panel for liquidation structure**
 
 ```
-SOL  ↑B  @ 148.32   +0.41% away   x38  $1.8M   bucket 0.21%
-SOL  ↓S  @ 145.10   −1.78% away   x12  $420k   bucket 0.21%
+SOL  ↓L  @ 145.10   1.78% away   x12  $420k
+SOL  ↑S  @ 148.32   0.41% away   x4   $180k
 ```
 
-The dominant cluster is buy-side, sitting 0.41% above current mark. Longs have been aggressively buying just above where price is now. This means the crowd is already extended slightly upward. The sell cluster below is smaller and further away.
+The dominant cluster is long liquidations below current mark. Longs have already
+been forced out at that lower level, and the cluster is close enough that a
+renewed drop could reconnect with the same forced-selling zone.
 
-This tells you the longs are piled in above the current level with relatively little sell-side support below them. If price drops even modestly, those above-mark buy clusters are now underwater and their stop-losses or margin calls start triggering.
+This tells you the long side is fragile below the current level. If price drops
+even modestly and OI remains elevated, the next wave of longs can be pushed into
+the same forced-selling path.
 
 ---
 
@@ -669,16 +677,19 @@ are still pressing.
 
 ---
 
-**Step 3: Check Flow Clusters for structural context**
+**Step 3: Check Liq Clusters for structural context**
 
 ```
-ETH  ↓S  @ 3,242.10   −0.88% away   x61  $4.2M   bucket 0.18%
-ETH  ↑B  @ 3,298.40   +0.71% away   x19  $1.1M   bucket 0.18%
+ETH  ↑S  @ 3,298.40   0.71% away   x19  $1.1M
+ETH  ↓L  @ 3,242.10   0.88% away   x6   $390k
 ```
 
-The dominant cluster is a large sell cluster sitting 0.88% below current mark. $4.2M in aggressive selling happened at that level. This cluster tells you two things: (1) there was significant short commitment at 3,242 — those are positions now sitting underwater if price rises to current levels; and (2) a retest of that level is likely to encounter resistance from existing shorts defending their entries.
+The dominant cluster is short liquidations above current mark. $1.1M in forced
+buying happened at that level. This tells you that shorts have already been
+stressed above the market, and a move back into that zone can restart forced
+covering.
 
-The smaller buy cluster above (+0.71%) is less relevant here.
+The smaller long-liquidation cluster below is less relevant for the long setup.
 
 The key insight: if price moves upward from here, the crowd of shorts who entered at 3,242 will see their positions approach breakeven. If they are leveraged, their margin cushion shrinks fast. At some point, covering orders start going in.
 
@@ -732,7 +743,7 @@ Not all signals are equal. Here is a rough priority order for building a thesis:
 4. **Basis** — confirms the perp-vs-spot dislocation that feeds a squeeze
 5. **OI Δ15m%** — confirms whether new leverage is still entering
 6. **Impact / Book** — confirms the structural thinness that amplifies the cascade
-7. **Flow Clusters** — confirms where prior conviction sits and whether those levels are being defended or abandoned
+7. **Liq Clusters** — confirms where forced closes are stacking and whether the cascade is active or exhausted
 8. **OI/Vol** — provides context on how stale the leverage is (amplifier, not trigger)
 9. **β/ρ BTC** — distinguishes idiosyncratic setups from BTC-driven moves
 

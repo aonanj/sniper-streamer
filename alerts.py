@@ -66,9 +66,9 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         _fire(now, sym, st, "FUNDING",
               _detail(
                   _funding_bias(funding_pct),
-                  "weak signal",
+                  "weak",
                   _funding_why(funding_pct),
-                  f"funding {funding_pct:+.4f}% vs +/-{config.ALERT_FUNDING_PCT:.4f}% alert",
+                  f"funding {funding_pct:+.4f}% vs +/-{config.ALERT_FUNDING_PCT:.4f}%",
               ),
               dedup_window=config.ALERT_FUNDING_DEDUP_WINDOW_SEC)
 
@@ -83,12 +83,12 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             long_liq = sum(q * p for _, side, q, p in recent_liqs if side == "SELL")
             short_liq = liq_vol - long_liq
             if long_liq >= short_liq:
-                move = "close SHORT / consider LONG"
-                why = "long liquidations flushing into book"
+                move = "close SHORT / open LONG"
+                why = "long liquidations into book"
                 dominant = f"long liq {_money(long_liq)}"
             else:
-                move = "close LONG / consider SHORT"
-                why = "short liquidations squeezing into book"
+                move = "close LONG / open SHORT"
+                why = "short liquidations into book"
                 dominant = f"short liq {_money(short_liq)}"
             _fire(now, sym, st, "LIQ_VOL",
                   _detail(
@@ -105,13 +105,13 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             oi_move = "leverage opening"
             oi_strength = "context"
             oi_why = (
-                "new margin entering; check funding/taker side to infer"
+                "new margin event; read with funding/taker side"
                 " long vs short crowding"
             )
         else:
-            oi_move = "deleveraging / take-profit clue"
+            oi_move = "deleveraging / take-profit signal"
             oi_strength = "context"
-            oi_why = "positions are closing, less pressure on squeeze"
+            oi_why = "positions closing → less squeeze pressure"
         _fire(
             now, sym, st, "OI_1H",
             _detail(
@@ -121,7 +121,7 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                 f"OI 1h {oi_d1h:+.2f}%; "
                 f"notional {_fmt_fraction_pct(oi_day_fraction)} of 24h volume vs "
                 f"+/-{config.ALERT_OI_DELTA_1H_PCT:.2f}% or "
-                f"+/-{config.ALERT_OI_DELTA_1H_DAY_FRACTION * 100:.2f}% volume alert",
+                f"+/-{config.ALERT_OI_DELTA_1H_DAY_FRACTION * 100:.2f}% volume",
             ),
         )
 
@@ -150,9 +150,9 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         _fire(now, sym, st, "THIN_BOOK",
               _detail(
                   "cascade amplifier",
-                  "weak alone",
+                  "weak",
                   "thin impact book can increase liquidation (long / short)",
-                  f"impact excess {impact:.1f}bp vs {impact_threshold:.1f}bp alert",
+                  f"impact excess: {impact:.1f}bp vs {impact_threshold:.1f}bp",
               ))
 
     flow_threshold = _volume_scaled_threshold(
@@ -162,7 +162,6 @@ def _check_simple(sym: str, st: SymbolState) -> None:
         config.TAKER_CLUSTER_ALERT_FLOOR_USD,
     )
     clusters = st.taker_flow_clusters(
-        window_ms=3_600_000,
         min_notional=flow_threshold,
         min_count=config.TAKER_CLUSTER_ALERT_MIN_COUNT,
     )
@@ -176,10 +175,10 @@ def _check_simple(sym: str, st: SymbolState) -> None:
             side = "BUY" if top["buy"] >= top["sell"] else "SELL"
             if side == "BUY":
                 move = "long crowding zone"
-                why = "aggressive buys concentrated; stronger with positive funding and rising OI"
+                why = "aggressive buys concentrated; read with funding (positive) and OI (increasing)"
             else:
                 move = "short crowding zone"
-                why = "aggressive sells concentrated; stronger with negative funding and rising OI"
+                why = "aggressive sells concentrated; read with funding (negative) and OI (increasing)"
             _fire(now, sym, st, "FLOW_CLUSTER",
                   _detail(
                       move,
@@ -187,7 +186,8 @@ def _check_simple(sym: str, st: SymbolState) -> None:
                       why,
                       f"{side.lower()} cluster @ {top['price']:,.4f}; "
                       f"{top['count']} trades; {_money(top['notional'])}; "
-                      f"{dominance:.0f}% one-sided",
+                      f"{dominance:.0f}% one-sided; "
+                      f"{top.get('ref_source', 'ref')} bucket ref",
                   ),
                   dedup_key=f"FLOW_CLUSTER:{sym}:{side}",
                   dedup_window=config.TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC)
@@ -231,7 +231,7 @@ def _check_long_squeeze(sym: str, st: SymbolState) -> None:
         _detail(
             "open SHORT / close LONG",
             "strong",
-            "crowded longs are vulnerable to forced selling",
+            "crowded longs near liquidation",
             f"funding {funding_pct:+.4f}%; OI 1h +{oi_d1h:.1f}%; "
             f"OI notional {_fmt_oi_day_fraction(st)} of 24h volume; "
             f"taker buy {tp5:.0f}%; long-liq cluster {dist_pct:.2f}% below",
@@ -270,7 +270,7 @@ def _check_capitulation(sym: str, st: SymbolState) -> None:
         time.time(), sym, st, "CAPITULATION",
         _detail(
             "close SHORT / consider LONG",
-            "strong but late",
+            "strong (lagging)",
             "forced selling into negative basis can mark exhaustion",
             f"5m liq {_money(liq_vol)}; {_cvd_label(cvd5)}; "
             f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%",
@@ -313,7 +313,7 @@ def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
         _detail(
             "open SHORT / close LONG",
             "strong",
-            "crowded longs are building into a thin or ask-heavy book",
+            "crowded longs accumulating in thin/ask-heavy book",
             f"funding {funding_pct:+.4f}%; funding 1h {_fmt_pp(funding_delta)}; "
             f"OI 1h +{oi_d1h:.1f}% ({_fmt_oi_day_fraction(st)} of 24h volume); "
             f"taker buy {tp5:.0f}%; {book_note}",
@@ -353,7 +353,7 @@ def _check_structural_short_squeeze(sym: str, st: SymbolState) -> None:
         _detail(
             "open LONG / close SHORT",
             "strong",
-            "crowded shorts may cover into spot/bid support",
+            "crowded shorts trending down to spot/bid support",
             f"funding {funding_pct:+.4f}%; OI 1h +{oi_d1h:.1f}%; "
             f"OI notional {_fmt_oi_day_fraction(st)} of 24h volume; "
             f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%; {book_note}",
@@ -383,10 +383,10 @@ def _check_flow_capitulation(sym: str, st: SymbolState) -> None:
     _fire(
         time.time(), sym, st, "CAPITULATION",
         _detail(
-            "close SHORT / consider LONG",
-            "strong but late",
-            "aggressive selling into negative basis and thin impact can exhaust",
-            f"{_cvd_label(cvd5)} vs {_cvd_label(cvd_threshold)} alert; "
+            "close SHORT / open LONG",
+            "strong (lagging)",
+            "aggressive selling into negative basis and thin impact",
+            f"{_cvd_label(cvd5)} vs {_cvd_label(cvd_threshold)}; "
             f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%; impact {impact:.1f}bp",
         ),
     )
@@ -425,9 +425,9 @@ def _check_grinding_trap(sym: str, st: SymbolState) -> None:
     _fire(
         time.time(), sym, st, "GRINDING_TRAP",
         _detail(
-            "avoid LONG / probe SHORT",
+            "close LONG / open SHORT",
             "moderate",
-            "price is rising without aggressive buyer support",
+            "price is rising without proportional buyer support",
             f"price 15m +{px_d15:.2f}% ({px_sigma or 0:.1f} sigma); "
             f"{_cvd_label(cvd5)}; funding {st.funding*100:+.4f}%; "
             f"funding 1h {_fmt_pp(funding_delta)}; OI 15m +{oi_d15:.2f}%",
@@ -492,7 +492,7 @@ def _volume_scaled_threshold(
 
 
 def _detail(move: str, strength: str, why: str, evidence: str) -> str:
-    return f"Bias: {move} ({strength}) | Why: {why} | Evidence: {evidence}"
+    return f"▸ {move} | {strength} | {why} ({evidence})"
 
 
 def _funding_bias(funding_pct: float) -> str:
@@ -505,10 +505,10 @@ def _funding_bias(funding_pct: float) -> str:
 
 def _funding_why(funding_pct: float) -> str:
     if funding_pct > 0:
-        return "longs are paying, long crowding may be building"
+        return "longs paying → long crowding potential"
     if funding_pct < 0:
-        return "shorts are paying, short crowding may be building"
-    return "funding is neutral"
+        return "shorts paying → short crowding potential"
+    return "neutral funding"
 
 
 def _fmt_pp(value: float | None) -> str:

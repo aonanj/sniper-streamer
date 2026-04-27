@@ -46,10 +46,18 @@ FUNDING_HISTORY_MIN_INTERVAL_MS = 60_000
 # Liquidation cluster detection
 LIQ_CLUSTER_BUCKET_PCT = 0.1  # price bucket width as % of mark
 LIQ_CLUSTER_MIN_COUNT  = 3    # minimum events in a bucket to flag as cluster
-LIQUIDATION_FEED_ENABLED = False  # Hyperliquid has no official public all-market liq stream
+LIQUIDATION_FEED_ENABLED = True  # consume Bybit allLiquidation for unthrottled liq events
+LIQUIDATION_FEED_SOURCE = "bybit_all_liquidation"
 BASIS_SPOT_PREMIUM_MAX_DIVERGENCE_PCT = 0.5  # fallback to oracle if spot basis disagrees with HL premium
 
-# Taker-flow cluster proxy used while public liquidation data is unavailable.
+# Bybit's allLiquidation feed is per exchange symbol. The local watchlist stays
+# Hyperliquid-oriented (e.g. "btc-usdc"), so these map watched coins to Bybit.
+BYBIT_LIQUIDATION_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+BYBIT_LIQUIDATION_QUOTE = "USDT"
+BYBIT_LIQUIDATION_SYMBOL_OVERRIDES = {}
+BYBIT_LIQUIDATION_PING_INTERVAL_SEC = 20.0
+
+# Taker-flow cluster fallback used when the liquidation feed is disabled.
 TAKER_CLUSTER_MIN_USD = 500_000
 TAKER_CLUSTER_MIN_DAY_FRACTION = 0.0015  # visible flow clusters scale to 24h volume
 TAKER_CLUSTER_MIN_COUNT = 3
@@ -59,6 +67,8 @@ TAKER_CLUSTER_ALERT_MIN_DAY_FRACTION = 0.01
 TAKER_CLUSTER_ALERT_MIN_COUNT = 10
 TAKER_CLUSTER_ALERT_DOMINANCE_PCT = 70.0
 TAKER_CLUSTER_ALERT_DEDUP_WINDOW_SEC = 1_800.0
+TAKER_CLUSTER_WINDOW_MS = 0  # 0 = whole in-memory session
+TAKER_CLUSTER_SESSION_MAX_TRADES = 120_000
 TAKER_CLUSTER_BUCKET_MIN_PCT = 0.1
 TAKER_CLUSTER_BUCKET_MAX_PCT = 0.6
 TAKER_CLUSTER_BUCKET_VOL_MULTIPLIER = 0.25
