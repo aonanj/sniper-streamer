@@ -6,6 +6,7 @@ from persistence import run_persistence
 
 
 async def main() -> None:
+    """Run the legacy terminal dashboard with local persistence."""
     await asyncio.gather(run_ws(), poll_rest(), render(), run_persistence(state))
 
 

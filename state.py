@@ -315,6 +315,8 @@ class SymbolState:
     liqs: deque = field(default_factory=lambda: deque(maxlen=500))
 
     # Taker trade windows - buy/sell notional tracked per horizon
+    trades_15s: TradeWindow = field(default_factory=lambda: TradeWindow(15_000))
+    trades_30s: TradeWindow = field(default_factory=lambda: TradeWindow(30_000))
     trades_1m: TradeWindow = field(default_factory=lambda: TradeWindow(60_000))
     trades_5m: TradeWindow = field(default_factory=lambda: TradeWindow(300_000))
     trades_15m: TradeWindow = field(default_factory=lambda: TradeWindow(900_000))
@@ -353,6 +355,8 @@ class SymbolState:
         self, ts_ms: int, is_buyer_maker: bool, qty: float, price: float
     ) -> None:
         self._record_session_open(ts_ms, price)
+        self.trades_15s.add(ts_ms, is_buyer_maker, qty, price)
+        self.trades_30s.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_1m.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_5m.add(ts_ms, is_buyer_maker, qty, price)
         self.trades_15m.add(ts_ms, is_buyer_maker, qty, price)
@@ -639,6 +643,10 @@ class SymbolState:
             min_count = config.TAKER_CLUSTER_MIN_COUNT
         if window_ms <= 0:
             trade_window = self.trades_session
+        elif window_ms <= 15_000:
+            trade_window = self.trades_15s
+        elif window_ms <= 30_000:
+            trade_window = self.trades_30s
         elif window_ms <= 60_000:
             trade_window = self.trades_1m
         elif window_ms <= 300_000:

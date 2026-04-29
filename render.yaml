@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: sniper-streamer-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SNIPER_DATABASE_BACKEND
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
+      - key: API_TOKEN
+        sync: false
+
+  - type: worker
+    name: sniper-streamer-worker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    envVars:
+      - key: SNIPER_DATABASE_BACKEND
+        value: postgres
+      - key: DATABASE_URL
+        sync: false

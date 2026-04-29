@@ -19,7 +19,14 @@ sys.path.insert(0, str(REPO_ROOT))
 import config  # noqa: E402
 
 
-TABLES = ("market_snapshots", "trades", "liquidations", "alerts")
+TABLES = (
+    "market_snapshots",
+    "trades",
+    "liquidations",
+    "alerts",
+    "signals",
+    "storage_reports",
+)
 
 SNAPSHOT_METRICS = (
     "mark",

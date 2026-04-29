@@ -10,7 +10,46 @@ like Binance `!forceOrder@arr`. This dashboard therefore keeps Hyperliquid as
 the market-context venue, but consumes liquidation events from Bybit's public
 `allLiquidation` stream by default.
 
-## Running It
+## Backend Services
+
+The repo now has separate backend entrypoints:
+
+- `worker.py` - background ingestion worker for Hyperliquid market context,
+  Bybit liquidations, structured signal snapshots, and persistence
+- `api.py` - FastAPI read service exposing current symbol snapshots and active
+  structured signals
+- `main.py` - legacy local terminal dashboard, kept for development
+
+Local worker with SQLite:
+
+```bash
+./.venv/bin/python worker.py
+```
+
+Local API with SQLite:
+
+```bash
+./.venv/bin/uvicorn api:app --reload --host 0.0.0.0 --port 8000
+```
+
+Production uses `SNIPER_DATABASE_BACKEND=postgres` and `DATABASE_URL` for Neon
+Postgres. `API_TOKEN` enables simple bearer or `X-API-Token` protection.
+
+API endpoints:
+
+- `GET /api/health`
+- `GET /api/symbols`
+- `GET /api/signals`
+- `GET /api/signals/{symbol}`
+- `GET /api/storage`
+- `WS /ws/signals`
+
+`render.yaml` defines one Render Web Service for `api.py` and one Render
+Background Worker for `worker.py`. The worker uses a Postgres advisory lock in
+Postgres mode so duplicate worker instances do not ingest and persist the same
+stream data.
+
+## Running The Legacy Dashboard
 
 From the repo root:
 

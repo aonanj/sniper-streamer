@@ -242,40 +242,60 @@ def _check_long_squeeze(sym: str, st: SymbolState) -> None:
 def _check_capitulation(sym: str, st: SymbolState) -> None:
     """Capitulation reversal setup.
 
-    Fires when forced sellers are hammering the perp book: large liq volume,
-    sharply negative CVD, crowded selling tape, and the perp is trading below
-    spot (negative basis). This combination often marks a short-term bottom.
+    Two trigger paths:
+
+    1. CASCADE ONSET (early): 15s CVD hammered while 5m CVD is still green.
+       The divergence between ultra-short and medium-term flow is the precise
+       moment a liquidation cascade begins — before the 5m window averages it out.
+
+    2. CLASSIC (lagging): 5m CVD deeply negative, crowded selling, negative basis.
+       Fires after the cascade is well underway, useful as confirmation.
     """
     liq_vol = sum(q * p for _, _, q, p in st.recent_liqs(300_000))
-    cvd5 = st.trades_5m.cvd()
+    cvd_15s = st.trades_15s.cvd()
+    cvd_5m = st.trades_5m.cvd()
     tp5 = st.trades_5m.taker_pct()
     liq_threshold = st.volume_scaled_threshold(
         config.ALERT_LIQ_CAPITULATION_USD,
         config.ALERT_LIQ_VOL_5M_DAY_FRACTION,
     )
-    cvd_threshold = -st.volume_scaled_threshold(
+    cvd_threshold_5m = -st.volume_scaled_threshold(
         abs(config.ALERT_CVD_SHARP_NEG_USD),
         config.ALERT_CVD_SHARP_NEG_DAY_FRACTION,
     )
+    cvd_threshold_15s = -st.volume_scaled_threshold(
+        abs(config.ALERT_CVD_15S_SHARP_NEG_USD),
+        config.ALERT_CVD_15S_SHARP_NEG_DAY_FRACTION,
+    )
 
-    if not (
-        liq_vol >= liq_threshold
-        and cvd5 <= cvd_threshold
-        and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
-        and st.basis_pct <= config.ALERT_BASIS_CAPITULATION
-    ):
+    if liq_vol < liq_threshold or st.basis_pct > config.ALERT_BASIS_CAPITULATION:
         return
 
-    _fire(
-        time.time(), sym, st, "CAPITULATION",
-        _detail(
-            "close SHORT / consider LONG",
-            "strong (lagging)",
-            "forced selling into negative basis can mark exhaustion",
-            f"5m liq {_money(liq_vol)}; {_cvd_label(cvd5)}; "
-            f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%",
-        ),
-    )
+    if cvd_15s <= cvd_threshold_15s and cvd_5m > cvd_threshold_5m:
+        _fire(
+            time.time(), sym, st, "CAPITULATION",
+            _detail(
+                "close SHORT / consider LONG",
+                "early — cascade onset",
+                "15s CVD deep red while 5m still green: liquidation cascade just started",
+                f"5m liq {_money(liq_vol)}; {_cvd_label(cvd_15s)} (15s); "
+                f"{_cvd_label(cvd_5m)} (5m); basis {st.basis_pct:+.3f}%",
+            ),
+        )
+    elif (
+        cvd_5m <= cvd_threshold_5m
+        and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
+    ):
+        _fire(
+            time.time(), sym, st, "CAPITULATION",
+            _detail(
+                "close SHORT / consider LONG",
+                "strong (lagging)",
+                "forced selling into negative basis can mark exhaustion",
+                f"5m liq {_money(liq_vol)}; {_cvd_label(cvd_5m)}; "
+                f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%",
+            ),
+        )
 
 
 def _check_structural_long_squeeze(sym: str, st: SymbolState) -> None:
@@ -362,34 +382,54 @@ def _check_structural_short_squeeze(sym: str, st: SymbolState) -> None:
 
 
 def _check_flow_capitulation(sym: str, st: SymbolState) -> None:
-    """Sell-pressure exhaustion proxy when liquidations are not public."""
-    cvd5 = st.trades_5m.cvd()
+    """Sell-pressure exhaustion proxy when liquidations are not public.
+
+    Two trigger paths mirror _check_capitulation: early cascade-onset divergence
+    (15s CVD deep red, 5m still green) fires before the classic lagging signal.
+    """
+    cvd_15s = st.trades_15s.cvd()
+    cvd_5m = st.trades_5m.cvd()
     tp5 = st.trades_5m.taker_pct()
     impact = st.impact_excess_bps
     impact_threshold = _impact_threshold(sym)
-    cvd_threshold = -st.volume_scaled_threshold(
+    cvd_threshold_5m = -st.volume_scaled_threshold(
         abs(config.ALERT_CVD_SHARP_NEG_USD),
         config.ALERT_CVD_SHARP_NEG_DAY_FRACTION,
     )
+    cvd_threshold_15s = -st.volume_scaled_threshold(
+        abs(config.ALERT_CVD_15S_SHARP_NEG_USD),
+        config.ALERT_CVD_15S_SHARP_NEG_DAY_FRACTION,
+    )
+    thin_book = impact is not None and impact >= impact_threshold
 
-    if not (
-        cvd5 <= cvd_threshold
-        and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
-        and st.basis_pct <= config.ALERT_BASIS_CAPITULATION
-        and impact is not None and impact >= impact_threshold
-    ):
+    if not thin_book or st.basis_pct > config.ALERT_BASIS_CAPITULATION:
         return
 
-    _fire(
-        time.time(), sym, st, "CAPITULATION",
-        _detail(
-            "close SHORT / open LONG",
-            "strong (lagging)",
-            "aggressive selling into negative basis and thin impact",
-            f"{_cvd_label(cvd5)} vs {_cvd_label(cvd_threshold)}; "
-            f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%; impact {impact:.1f}bp",
-        ),
-    )
+    if cvd_15s <= cvd_threshold_15s and cvd_5m > cvd_threshold_5m:
+        _fire(
+            time.time(), sym, st, "CAPITULATION",
+            _detail(
+                "close SHORT / open LONG",
+                "early — cascade onset",
+                "15s CVD diving while 5m still green: forced sell cascade just started",
+                f"{_cvd_label(cvd_15s)} (15s); {_cvd_label(cvd_5m)} (5m); "
+                f"basis {st.basis_pct:+.3f}%; impact {impact:.1f}bp",
+            ),
+        )
+    elif (
+        cvd_5m <= cvd_threshold_5m
+        and tp5 is not None and tp5 <= config.ALERT_TAKER_LOW_PCT
+    ):
+        _fire(
+            time.time(), sym, st, "CAPITULATION",
+            _detail(
+                "close SHORT / open LONG",
+                "strong (lagging)",
+                "aggressive selling into negative basis and thin impact",
+                f"{_cvd_label(cvd_5m)} vs {_cvd_label(cvd_threshold_5m)}; "
+                f"taker buy {tp5:.0f}%; basis {st.basis_pct:+.3f}%; impact {impact:.1f}bp",
+            ),
+        )
 
 
 def _check_grinding_trap(sym: str, st: SymbolState) -> None:
